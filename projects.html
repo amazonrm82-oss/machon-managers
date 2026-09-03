@@ -134,6 +134,29 @@
   .board-card-title { font-weight: 600; font-size: 13px; margin-bottom: 6px; }
   .board-card-meta { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 8px; }
   .board-empty { text-align: center; padding: 20px 8px; opacity: .4; font-size: 12px; }
+
+  .timeline-wrap { overflow-x: auto; }
+  .timeline-scale { position: relative; height: 24px; margin-inline-start: 200px; border-bottom: 1px solid var(--color-neutral-700); min-width: 700px; }
+  .timeline-scale-tick { position: absolute; top: 0; bottom: 0; font-size: 11px; opacity: .55; border-inline-start: 1px solid var(--color-neutral-800); padding-inline-start: 4px; }
+  .timeline-row { display: flex; align-items: center; min-height: 40px; border-bottom: 1px solid var(--color-neutral-800); }
+  .timeline-row-label { width: 200px; flex-shrink: 0; font-size: 12px; padding-inline-end: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+  .timeline-row-label:hover { text-decoration: underline; }
+  .timeline-track { position: relative; flex: 1; height: 24px; min-width: 700px; }
+  .timeline-bar { position: absolute; top: 3px; height: 18px; border-radius: 99px; cursor: pointer; display: flex; align-items: center; padding: 0 8px; font-size: 10px; color: #fff; white-space: nowrap; overflow: hidden; }
+  .timeline-today { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--color-accent); opacity: .5; }
+  .no-dates-note { font-size: 12px; opacity: .55; margin-top: var(--space-3); }
+
+  .task-checklist { padding: 6px 0 6px 34px; }
+  .checklist-item { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 0; }
+  .checklist-item button { border: none; background: none; cursor: pointer; opacity: .4; font-size: 11px; }
+  .checklist-item button:hover { opacity: 1; }
+  .checklist-add { display: flex; gap: 6px; margin-top: 4px; }
+  .checklist-add input { flex: 1; padding: 4px 8px; font-size: 12px; border-radius: var(--radius-sm); border: 1px solid var(--color-neutral-700); font-family: inherit; }
+  .checklist-toggle { border: none; background: var(--color-neutral-800); border-radius: 99px; font-size: 10px; padding: 2px 8px; cursor: pointer; color: var(--color-text); white-space: nowrap; }
+
+  .mytasks-row { display: flex; align-items: center; gap: var(--space-3); padding: 10px 0; border-bottom: 1px solid var(--color-neutral-800); }
+  .mytasks-row:last-child { border-bottom: none; }
+  .whoami-card { max-width: 420px; }
 </style>
 </head>
 <body>
@@ -161,6 +184,11 @@ const PRIORITY_TAG_CLASS = { 'גבוהה': 'prio-high', 'בינונית': 'prio-
 const CATEGORY_OPTIONS = ['תשתיות ובינוי', 'רכש והצטיידות', 'הדרכה וכוח אדם', 'תוכניות וטיפול', 'IT ומערכות', 'אחר'];
 const TASK_STATUS_OPTIONS = ['ממתין', 'בביצוע', 'הושלם'];
 const ROLE_LABELS = { national: 'מנהל תפעול ארצי', president: 'נשיא', instituteManager: 'מנהל/ת מכון' };
+// A pseudo-institute for organization-wide projects that aren't tied to any single institute
+// (e.g. a headquarters initiative). Only national/president ever see or use it — institute
+// managers never leave their own institute's scope, so they never encounter this id.
+const DIVISION_ID = '__general__';
+const DIVISION_NAME = 'כללי';
 
 function notifyIdentity(identityKeys, title, body) {
   try {
@@ -203,6 +231,13 @@ function avatarStackHtml(names, size) {
   return `<span class="avatar-stack">${names.map((n) => avatarHtml(n, size)).join('')}</span>`;
 }
 function instituteEmployees(instituteId) {
+  // "כללי" projects aren't tied to one institute's staff, so suggest everyone across every
+  // institute instead of an empty list — still just a suggestion, free text stays allowed.
+  if (instituteId === DIVISION_ID) {
+    const all = new Set();
+    Object.values(state.employeesByInstitute || {}).forEach((list) => list.forEach((n) => all.add(n)));
+    return [...all].sort();
+  }
   return (state.employeesByInstitute && state.employeesByInstitute[instituteId]) || [];
 }
 
@@ -218,9 +253,16 @@ let state = {
   allInstitutes: [], // [{id, name}]
   employeesByInstitute: {}, // instituteId -> [names]
   rolePasswords: null,
-  projectListViewMode: 'board', // board | list
+  projectListViewMode: 'board', // board | list | timeline
   newTeamMemberPick: '',
   dragProjectId: null,
+  expandedChecklists: {}, // taskId -> bool
+  checklistDraft: {}, // taskId -> draft text
+  myName: sessionStorage.getItem(SESSION_KEY + '_myname') || '',
+  myNamePick: '',
+  myTasks: [],
+  myTasksLoading: false,
+  myTasksFrom: null,
   view: 'instituteList', // instituteList | projectList | projectDetail | overview
   currentInstituteId: null,
   projects: [],
@@ -321,6 +363,7 @@ function topbarTemplate() {
       <div class="brand-sub">${esc(ROLE_LABELS[state.role] || '')}${state.role === 'instituteManager' ? ' · ' + esc(instituteName(state.myInstituteId)) : ''}</div>
     </div>
     <div style="display:flex;gap:8px;">
+      <button type="button" class="btn btn-sm" onclick="openMyTasks()">✅ המשימות שלי</button>
       <button type="button" class="btn btn-sm" onclick="openOverview()">📊 סקירה כללית</button>
       <a class="btn btn-sm" href="index.html">🏠 למערכת הראשית</a>
       <button type="button" class="btn btn-sm" onclick="logout()">יציאה</button>
@@ -328,28 +371,34 @@ function topbarTemplate() {
   </div>`;
 }
 
-function instituteName(id) { const i = state.allInstitutes.find((x) => x.id === id); return i ? i.name : ''; }
+function instituteName(id) { if (id === DIVISION_ID) return DIVISION_NAME; const i = state.allInstitutes.find((x) => x.id === id); return i ? i.name : ''; }
 
 function appBodyTemplate() {
   if (state.view === 'instituteList') return instituteListTemplate();
   if (state.view === 'projectList') return projectListTemplate();
   if (state.view === 'projectDetail') return projectDetailTemplate();
   if (state.view === 'overview') return overviewTemplate();
+  if (state.view === 'myTasks') return myTasksTemplate();
   return '';
 }
 
-function instituteListTemplate() {
-  const cards = state.allInstitutes.map((i) => `
-    <div class="card card-clickable" onclick="openInstituteProjects('${esc(i.id)}')">
+function instituteCardHtml(id, name) {
+  return `
+    <div class="card card-clickable" onclick="openInstituteProjects('${esc(id)}')">
       <div class="row">
         <div>
-          <div style="font-weight:600;">${esc(i.name)}</div>
-          <div class="muted">${state.projectCounts[i.id] || 0} פרויקטים</div>
+          <div style="font-weight:600;">${esc(name)}</div>
+          <div class="muted">${state.projectCounts[id] || 0} פרויקטים</div>
         </div>
         <div style="font-size:20px;">←</div>
       </div>
-    </div>`).join('');
-  return `<h1>בחר/י מכון</h1><div class="grid" style="grid-template-columns:1fr;">${cards || '<div class="muted">אין מכונים</div>'}</div>`;
+    </div>`;
+}
+
+function instituteListTemplate() {
+  const generalCard = instituteCardHtml(DIVISION_ID, DIVISION_NAME + ' (לא משויך למכון ספציפי)');
+  const cards = state.allInstitutes.map((i) => instituteCardHtml(i.id, i.name)).join('');
+  return `<h1>בחר/י מכון</h1><div class="grid" style="grid-template-columns:1fr;">${generalCard}${cards || '<div class="muted">אין מכונים</div>'}</div>`;
 }
 
 function visibleProjects() {
@@ -372,7 +421,7 @@ function projectCardMetaHtml(p) {
 function projectListTemplate() {
   const filtered = visibleProjects();
   const statusFilterOpts = ['all', ...STATUS_OPTIONS].map((s) => `<option value="${esc(s)}"${state.projectListStatusFilter === s ? ' selected' : ''}>${s === 'all' ? 'כל הסטטוסים' : esc(s)}</option>`).join('');
-  const body = state.projectListViewMode === 'board' ? boardHtml(filtered) : listHtml(filtered);
+  const body = state.projectListViewMode === 'board' ? boardHtml(filtered) : state.projectListViewMode === 'timeline' ? timelineHtml(filtered) : listHtml(filtered);
   return `
     <div class="breadcrumb">${state.role === 'instituteManager' ? '' : `<a onclick="backToInstituteList()">כל המכונים</a> / `}${esc(instituteName(state.currentInstituteId))}</div>
     <div class="row" style="margin-bottom:var(--space-4);">
@@ -381,6 +430,7 @@ function projectListTemplate() {
         <div class="view-toggle">
           <button type="button" class="${state.projectListViewMode === 'board' ? 'active' : ''}" onclick="state.projectListViewMode='board';render()">🗂️ לוח</button>
           <button type="button" class="${state.projectListViewMode === 'list' ? 'active' : ''}" onclick="state.projectListViewMode='list';render()">📋 רשימה</button>
+          <button type="button" class="${state.projectListViewMode === 'timeline' ? 'active' : ''}" onclick="state.projectListViewMode='timeline';render()">🗓️ ציר זמן</button>
         </div>
         <button type="button" class="btn btn-primary" onclick="startNewProject()">+ פרויקט חדש</button>
       </div>
@@ -499,20 +549,101 @@ async function moveProjectToStatus(projectId, newStatus) {
   }
 }
 
-function taskListHtml() {
-  const tasks = state.currentTasks.map((t) => `
-    <div class="task-row">
-      <input type="checkbox" ${t.status === 'הושלם' ? 'checked' : ''} onchange="toggleTaskDone('${esc(t.id)}', this.checked)">
-      ${t.assignee ? avatarHtml(t.assignee, 'sm') : ''}
-      <div style="flex:1;">
-        <div style="${t.status === 'הושלם' ? 'text-decoration:line-through;opacity:.55;' : ''}">${esc(t.title)}</div>
-        <div class="muted">${t.assignee ? esc(t.assignee) : ''}${t.due_date ? (t.assignee ? ' · ' : '') + 'יעד: ' + esc(t.due_date) : ''}</div>
+const STATUS_BAR_COLOR = { 'מתוכנן': '#A99783', 'בביצוע': 'var(--color-accent-500)', 'תקוע': 'var(--color-accent-700)', 'הושלם': '#256B41' };
+function timelineHtml(filtered) {
+  const withDates = filtered.filter((p) => p.start_date && p.target_date);
+  const withoutDates = filtered.filter((p) => !(p.start_date && p.target_date));
+  if (!withDates.length) {
+    return `<div class="muted">אין פרויקטים עם תאריך התחלה ויעד להצגה על ציר הזמן.${withoutDates.length ? ' (' + withoutDates.length + ' פרויקטים ללא תאריכים מלאים)' : ''}</div>`;
+  }
+  let minMs = Infinity, maxMs = -Infinity;
+  withDates.forEach((p) => {
+    const s = new Date(p.start_date).getTime();
+    const e = new Date(p.target_date).getTime();
+    if (s < minMs) minMs = s;
+    if (e > maxMs) maxMs = e;
+  });
+  const padMs = 3 * 24 * 60 * 60 * 1000;
+  minMs -= padMs; maxMs += padMs;
+  const spanMs = Math.max(1, maxMs - minMs);
+  const pct = (ms) => ((ms - minMs) / spanMs) * 100;
+
+  // month tick marks across the span
+  const ticks = [];
+  const cursor = new Date(minMs);
+  cursor.setDate(1);
+  const MONTH_NAMES = ['ינו', 'פבר', 'מרץ', 'אפר', 'מאי', 'יונ', 'יול', 'אוג', 'ספט', 'אוק', 'נוב', 'דצמ'];
+  while (cursor.getTime() < maxMs) {
+    const ms = cursor.getTime();
+    if (ms >= minMs) ticks.push({ pct: pct(ms), label: MONTH_NAMES[cursor.getMonth()] + ' ' + cursor.getFullYear() });
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+  const todayPct = pct(Date.now());
+  const todayMarker = (todayPct >= 0 && todayPct <= 100) ? `<div class="timeline-today" style="right:${todayPct}%;"></div>` : '';
+
+  const rows = withDates.map((p) => {
+    const left = pct(new Date(p.start_date).getTime());
+    const width = Math.max(1.5, pct(new Date(p.target_date).getTime()) - left);
+    return `
+    <div class="timeline-row">
+      <div class="timeline-row-label" onclick="openProjectDetail('${esc(p.id)}')" title="${esc(p.name)}">${esc(p.name)}</div>
+      <div class="timeline-track">
+        <div class="timeline-bar" style="right:${left}%;width:${width}%;background:${STATUS_BAR_COLOR[p.status] || '#A99783'};" onclick="openProjectDetail('${esc(p.id)}')" title="${esc(p.name)}: ${esc(p.start_date)} — ${esc(p.target_date)}">${esc(p.name)}</div>
       </div>
-      <select class="input" style="width:auto;padding:4px 8px;font-size:12px;" onchange="setTaskStatus('${esc(t.id)}', this.value)">
-        ${TASK_STATUS_OPTIONS.map((s) => `<option value="${esc(s)}"${t.status === s ? ' selected' : ''}>${esc(s)}</option>`).join('')}
-      </select>
-      <button type="button" class="btn btn-ghost btn-sm" onclick="removeTask('${esc(t.id)}')" aria-label="הסרה">✕</button>
+    </div>`;
+  }).join('');
+  return `
+    <div class="timeline-wrap">
+      <div class="timeline-scale">${ticks.map((t) => `<div class="timeline-scale-tick" style="right:${t.pct}%;">${esc(t.label)}</div>`).join('')}</div>
+      <div style="position:relative;">
+        ${todayMarker}
+        ${rows}
+      </div>
+    </div>
+    ${withoutDates.length ? `<div class="no-dates-note">${withoutDates.length} פרויקטים בלי תאריך התחלה+יעד מלאים אינם מוצגים על הציר.</div>` : ''}`;
+}
+
+function checklistHtml(t) {
+  const items = Array.isArray(t.checklist) ? t.checklist : [];
+  const rows = items.map((it) => `
+    <div class="checklist-item">
+      <input type="checkbox" ${it.done ? 'checked' : ''} onchange="toggleChecklistItem('${esc(t.id)}','${esc(it.id)}',this.checked)">
+      <span style="${it.done ? 'text-decoration:line-through;opacity:.55;' : ''}flex:1;">${esc(it.text)}</span>
+      <button type="button" onclick="removeChecklistItem('${esc(t.id)}','${esc(it.id)}')" aria-label="הסרה">✕</button>
     </div>`).join('');
+  return `
+    <div class="task-checklist">
+      ${rows}
+      <div class="checklist-add">
+        <input type="text" placeholder="תת-משימה חדשה…" value="${esc(state.checklistDraft[t.id] || '')}" oninput="state.checklistDraft['${esc(t.id)}']=this.value" onkeydown="if(event.key==='Enter')addChecklistItem('${esc(t.id)}')">
+        <button type="button" class="btn btn-sm" onclick="addChecklistItem('${esc(t.id)}')">הוספה</button>
+      </div>
+    </div>`;
+}
+
+function taskListHtml() {
+  const tasks = state.currentTasks.map((t) => {
+    const items = Array.isArray(t.checklist) ? t.checklist : [];
+    const doneCount = items.filter((it) => it.done).length;
+    const expanded = !!state.expandedChecklists[t.id];
+    return `
+    <div>
+      <div class="task-row">
+        <input type="checkbox" ${t.status === 'הושלם' ? 'checked' : ''} onchange="toggleTaskDone('${esc(t.id)}', this.checked)">
+        ${t.assignee ? avatarHtml(t.assignee, 'sm') : ''}
+        <div style="flex:1;">
+          <div style="${t.status === 'הושלם' ? 'text-decoration:line-through;opacity:.55;' : ''}">${esc(t.title)}</div>
+          <div class="muted">${t.assignee ? esc(t.assignee) : ''}${t.due_date ? (t.assignee ? ' · ' : '') + 'יעד: ' + esc(t.due_date) : ''}</div>
+        </div>
+        <button type="button" class="checklist-toggle" onclick="toggleChecklistExpanded('${esc(t.id)}')">☑ ${doneCount}/${items.length}${expanded ? ' ▲' : ' ▼'}</button>
+        <select class="input" style="width:auto;padding:4px 8px;font-size:12px;" onchange="setTaskStatus('${esc(t.id)}', this.value)">
+          ${TASK_STATUS_OPTIONS.map((s) => `<option value="${esc(s)}"${t.status === s ? ' selected' : ''}>${esc(s)}</option>`).join('')}
+        </select>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="removeTask('${esc(t.id)}')" aria-label="הסרה">✕</button>
+      </div>
+      ${expanded ? checklistHtml(t) : ''}
+    </div>`;
+  }).join('');
   const done = state.currentTasks.filter((t) => t.status === 'הושלם').length;
   const total = state.currentTasks.length;
   const pct = total ? Math.round((done / total) * 100) : 0;
@@ -605,7 +736,7 @@ function projectDetailTemplate() {
       <div id="taskListContainer">${taskListHtml()}</div>
       <div class="grid" style="grid-template-columns:2fr 1fr 1fr auto;gap:8px;align-items:end;">
         <div class="field"><label>משימה חדשה</label><input class="input" id="taskTitleInput" value="${esc(state.taskDraft.title)}" oninput="state.taskDraft.title=this.value" onkeydown="if(event.key==='Enter')addTask()"></div>
-        <div class="field"><label>אחראי</label><input class="input" list="employeeDatalist" value="${esc(state.taskDraft.assignee)}" oninput="state.taskDraft.assignee=this.value"></div>
+        <div class="field"><label>אחראי</label><input class="input" id="taskAssigneeInput" list="employeeDatalist" value="${esc(state.taskDraft.assignee)}" oninput="state.taskDraft.assignee=this.value"></div>
         <div class="field"><label>יעד</label><input class="input" type="date" value="${esc(state.taskDraft.dueDate)}" oninput="state.taskDraft.dueDate=this.value"></div>
         <button type="button" class="btn" onclick="addTask()">הוספה</button>
       </div>
@@ -856,6 +987,42 @@ async function removeTask(taskId) {
   render();
 }
 
+function toggleChecklistExpanded(taskId) {
+  state.expandedChecklists[taskId] = !state.expandedChecklists[taskId];
+  render();
+}
+
+async function saveChecklist(taskId, checklist) {
+  const t = state.currentTasks.find((x) => x.id === taskId);
+  if (t) t.checklist = checklist;
+  const container = document.getElementById('taskListContainer');
+  if (container) container.innerHTML = taskListHtml();
+  try { await fetch(TASKS_URL + '?id=eq.' + encodeURIComponent(taskId), { method: 'PATCH', headers: { ...HEADERS_JSON, Prefer: 'return=minimal' }, body: JSON.stringify({ checklist }) }); } catch (e) {}
+}
+
+function addChecklistItem(taskId) {
+  const text = (state.checklistDraft[taskId] || '').trim();
+  if (!text) return;
+  const t = state.currentTasks.find((x) => x.id === taskId);
+  const items = (t && Array.isArray(t.checklist)) ? t.checklist : [];
+  const next = [...items, { id: uid('ci_'), text, done: false }];
+  state.checklistDraft[taskId] = '';
+  state.expandedChecklists[taskId] = true;
+  saveChecklist(taskId, next);
+}
+
+function toggleChecklistItem(taskId, itemId, done) {
+  const t = state.currentTasks.find((x) => x.id === taskId);
+  const items = (t && Array.isArray(t.checklist)) ? t.checklist : [];
+  saveChecklist(taskId, items.map((it) => (it.id === itemId ? { ...it, done } : it)));
+}
+
+function removeChecklistItem(taskId, itemId) {
+  const t = state.currentTasks.find((x) => x.id === taskId);
+  const items = (t && Array.isArray(t.checklist)) ? t.checklist : [];
+  saveChecklist(taskId, items.filter((it) => it.id !== itemId));
+}
+
 async function addUpdate() {
   const text = (state.updateDraft || '').trim();
   if (!text || !state.currentProject) return;
@@ -998,6 +1165,98 @@ function overviewTemplate() {
         <tbody>${rows || '<tr><td colspan="7" class="muted">אין פרויקטים.</td></tr>'}</tbody>
       </table>
     </div>`;
+}
+
+function setMyName(name) {
+  state.myName = name;
+  sessionStorage.setItem(SESSION_KEY + '_myname', name);
+}
+function clearMyName() {
+  state.myName = '';
+  sessionStorage.removeItem(SESSION_KEY + '_myname');
+  render();
+}
+
+async function openMyTasks() {
+  state.myTasksFrom = state.view === 'myTasks' ? state.myTasksFrom : state.view;
+  state.view = 'myTasks';
+  render();
+  if (!state.myName) return;
+  await fetchMyTasks();
+}
+
+async function fetchMyTasks() {
+  state.myTasksLoading = true; render();
+  try {
+    const res = await fetch(TASKS_URL + '?select=' + encodeURIComponent('*,projects(id,name,status,institute_id,institute_name)') + '&assignee=eq.' + encodeURIComponent(state.myName) + '&order=due_date.asc.nullslast', { headers: HEADERS_GET });
+    let rows = res.ok ? await res.json() : [];
+    if (state.role === 'instituteManager') rows = rows.filter((t) => t.projects && t.projects.institute_id === state.myInstituteId);
+    state.myTasks = rows;
+  } catch (e) { state.myTasks = []; }
+  state.myTasksLoading = false;
+  render();
+}
+
+function backFromMyTasks() {
+  const from = state.myTasksFrom;
+  if (from === 'projectList' && state.currentInstituteId) { openInstituteProjects(state.currentInstituteId); return; }
+  if (from === 'overview') { openOverview(); return; }
+  if (state.role === 'instituteManager') { openInstituteProjects(state.myInstituteId); return; }
+  state.view = 'instituteList';
+  fetchProjectCounts().then(render);
+  render();
+}
+
+function myTasksTemplate() {
+  if (!state.myName) {
+    const opts = state.role === 'instituteManager' ? instituteEmployees(state.myInstituteId) : [];
+    return `
+    <div class="breadcrumb"><a onclick="backFromMyTasks()">חזרה</a> / המשימות שלי</div>
+    <div class="card whoami-card" style="display:flex;flex-direction:column;gap:12px;">
+      <div>
+        <div style="font-weight:700;">מי אתה/את?</div>
+        <div class="muted">כדי להציג רק את המשימות ששויכו אליך, בחר/י או הקלד/י את השם שבו אתה משויך/ת במשימות.</div>
+      </div>
+      <div class="field">
+        <input class="input" id="myNameInput" list="${opts.length ? 'myNameDatalist' : ''}" placeholder="השם המלא שלך" onkeydown="if(event.key==='Enter')submitMyName()">
+        ${opts.length ? `<datalist id="myNameDatalist">${opts.map((n) => `<option value="${esc(n)}">`).join('')}</datalist>` : ''}
+      </div>
+      <button type="button" class="btn btn-primary" onclick="submitMyName()" style="align-self:flex-start;">שמירה והצגת המשימות שלי</button>
+    </div>`;
+  }
+  if (state.myTasksLoading) return `<div class="breadcrumb"><a onclick="backFromMyTasks()">חזרה</a> / המשימות שלי</div><div class="loading-box">טוען…</div>`;
+  const rows = state.myTasks.map((t) => `
+    <div class="mytasks-row">
+      <input type="checkbox" ${t.status === 'הושלם' ? 'checked' : ''} onchange="setMyTaskStatus('${esc(t.id)}', this.checked)">
+      <div style="flex:1;">
+        <div style="${t.status === 'הושלם' ? 'text-decoration:line-through;opacity:.55;' : ''}">${esc(t.title)}</div>
+        <div class="muted">${t.projects ? esc(t.projects.name) + (t.projects.institute_name ? ' · ' + esc(t.projects.institute_name) : '') : ''}${t.due_date ? ' · יעד: ' + esc(t.due_date) : ''}</div>
+      </div>
+      <button type="button" class="btn btn-sm" onclick="openProjectDetail('${esc(t.project_id)}')">לפרויקט</button>
+    </div>`).join('');
+  return `
+    <div class="breadcrumb"><a onclick="backFromMyTasks()">חזרה</a> / המשימות שלי</div>
+    <div class="row" style="margin-bottom:var(--space-4);">
+      <h1 style="margin:0;">✅ המשימות שלי — ${esc(state.myName)}</h1>
+      <button type="button" class="btn btn-sm" onclick="clearMyName()">זה לא אני / שינוי</button>
+    </div>
+    <div class="card">${rows || '<div class="muted">לא נמצאו משימות ששויכו לשם הזה.</div>'}</div>`;
+}
+
+function submitMyName() {
+  const input = document.getElementById('myNameInput');
+  const name = input ? input.value.trim() : '';
+  if (!name) return;
+  setMyName(name);
+  fetchMyTasks();
+}
+
+async function setMyTaskStatus(taskId, checked) {
+  const status = checked ? 'הושלם' : 'ממתין';
+  const t = state.myTasks.find((x) => x.id === taskId);
+  if (t) t.status = status;
+  render();
+  try { await fetch(TASKS_URL + '?id=eq.' + encodeURIComponent(taskId), { method: 'PATCH', headers: { ...HEADERS_JSON, Prefer: 'return=minimal' }, body: JSON.stringify({ status }) }); } catch (e) {}
 }
 
 async function enterApp() {
