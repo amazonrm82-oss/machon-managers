@@ -74,6 +74,11 @@
   .task-row:last-child { border-bottom: none; }
   .error-box { background: var(--color-accent-900); color: var(--color-accent-700); border: 1px solid var(--color-accent-800); border-radius: var(--radius-sm); padding: 10px 14px; font-size: 13px; }
   .loading-box { text-align: center; padding: 60px 0; opacity: .6; }
+  .overdue { color: var(--color-accent-700); font-weight: 600; }
+  .progress-track { background: var(--color-neutral-800); border-radius: 99px; height: 6px; overflow: hidden; }
+  .progress-fill { background: var(--color-accent); height: 100%; border-radius: 99px; transition: width .15s ease; }
+  .filter-bar { display: flex; align-items: center; gap: 8px; margin-bottom: var(--space-3); flex-wrap: wrap; }
+  .filter-bar select.input { width: auto; }
 </style>
 </head>
 <body>
@@ -85,13 +90,29 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const SUPABASE_STATE_URL = SUPABASE_URL + '/rest/v1/app_state';
 const PROJECTS_URL = SUPABASE_URL + '/rest/v1/projects';
 const TASKS_URL = SUPABASE_URL + '/rest/v1/project_tasks';
+const SEND_NOTIFICATION_URL = SUPABASE_URL + '/functions/v1/send-notification';
 const HEADERS_JSON = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY, 'Content-Type': 'application/json' };
 const HEADERS_GET = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
+const PROJECTS_SELECT = '*,project_tasks(id,status)';
+const POLL_MS = 20000;
 
 const STATUS_OPTIONS = ['מתוכנן', 'בביצוע', 'הושלם', 'תקוע'];
 const STATUS_TAG_CLASS = { 'מתוכנן': 'tag-planned', 'בביצוע': 'tag-progress', 'הושלם': 'tag-done', 'תקוע': 'tag-stuck' };
 const TASK_STATUS_OPTIONS = ['ממתין', 'בביצוע', 'הושלם'];
 const ROLE_LABELS = { national: 'מנהל תפעול ארצי', president: 'נשיא', instituteManager: 'מנהל/ת מכון' };
+
+function notifyIdentity(identityKeys, title, body) {
+  try {
+    fetch(SEND_NOTIFICATION_URL, { method: 'POST', headers: HEADERS_JSON, body: JSON.stringify({ identityKeys, title, body: body || '', url: './projects.html' }) }).catch(() => {});
+  } catch (e) { /* best-effort — a failed push must never block saving the project itself */ }
+}
+function todayStr() { return new Date().toISOString().slice(0, 10); }
+function isOverdue(p) { return !!(p.target_date && p.status !== 'הושלם' && p.target_date < todayStr()); }
+function taskProgress(p) {
+  const tasks = p.project_tasks || [];
+  const done = tasks.filter((t) => t.status === 'הושלם').length;
+  return { done, total: tasks.length };
+}
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -121,8 +142,35 @@ let state = {
   currentTasks: [],
   taskDraft: { title: '', assignee: '', dueDate: '' },
   busy: false,
+  saving: false,
   fatalError: '',
+  projectListStatusFilter: 'all',
+  projectListOverdueOnly: false,
 };
+
+let pollTimer = null;
+function startPolling() { if (!pollTimer) pollTimer = setInterval(pollTick, POLL_MS); }
+function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+async function pollTick() {
+  if (state.screen !== 'app') return;
+  if (state.view === 'projectList' && state.currentInstituteId) {
+    try {
+      const res = await fetch(PROJECTS_URL + '?institute_id=eq.' + encodeURIComponent(state.currentInstituteId) + '&select=' + encodeURIComponent(PROJECTS_SELECT) + '&order=created_at.desc', { headers: HEADERS_GET });
+      if (res.ok) { state.projects = await res.json(); render(); }
+    } catch (e) { /* silent — next tick retries */ }
+  } else if (state.view === 'projectDetail' && !state.isNewProject && state.currentProject) {
+    // only refresh the task list, not the whole page — a full re-render would blow away
+    // whatever the user is mid-typing in the project's own name/description/etc. fields
+    try {
+      const res = await fetch(TASKS_URL + '?project_id=eq.' + encodeURIComponent(state.currentProject.id) + '&order=created_at.asc', { headers: HEADERS_GET });
+      if (res.ok) {
+        state.currentTasks = await res.json();
+        const container = document.getElementById('taskListContainer');
+        if (container) container.innerHTML = taskListHtml();
+      }
+    } catch (e) { /* silent — next tick retries */ }
+  }
+}
 
 function render() {
   const root = document.getElementById('root');
@@ -202,29 +250,52 @@ function instituteListTemplate() {
   return `<h1>בחר/י מכון</h1><div class="grid" style="grid-template-columns:1fr;">${cards || '<div class="muted">אין מכונים</div>'}</div>`;
 }
 
+function visibleProjects() {
+  return state.projects.filter((p) => {
+    if (state.projectListStatusFilter !== 'all' && p.status !== state.projectListStatusFilter) return false;
+    if (state.projectListOverdueOnly && !isOverdue(p)) return false;
+    return true;
+  });
+}
+
 function projectListTemplate() {
-  const rows = state.projects.map((p) => `
+  const filtered = visibleProjects();
+  const rows = filtered.map((p) => {
+    const prog = taskProgress(p);
+    const pct = prog.total ? Math.round((prog.done / prog.total) * 100) : 0;
+    const overdue = isOverdue(p);
+    return `
     <div class="card card-clickable" onclick="openProjectDetail('${esc(p.id)}')">
       <div class="row">
-        <div style="display:flex;flex-direction:column;gap:4px;">
+        <div style="display:flex;flex-direction:column;gap:4px;flex:1;">
           <div style="font-weight:600;">${esc(p.name)}</div>
-          <div class="muted">${p.owner ? '👤 ' + esc(p.owner) : ''}${p.target_date ? ' · יעד: ' + esc(p.target_date) : ''}${p.budget ? ' · ' + fmtILS(p.budget) : ''}</div>
+          <div class="muted">${p.owner ? '👤 ' + esc(p.owner) : ''}${p.target_date ? ' · <span class="' + (overdue ? 'overdue' : '') + '">יעד: ' + esc(p.target_date) + (overdue ? ' (באיחור)' : '') + '</span>' : ''}${p.budget ? ' · ' + fmtILS(p.budget) : ''}</div>
+          ${prog.total ? `<div style="display:flex;align-items:center;gap:6px;margin-top:2px;">
+            <div class="progress-track" style="flex:1;max-width:160px;"><div class="progress-fill" style="width:${pct}%;"></div></div>
+            <span class="muted">${prog.done}/${prog.total} משימות</span>
+          </div>` : ''}
         </div>
         <span class="tag ${STATUS_TAG_CLASS[p.status] || 'tag-planned'}">${esc(p.status)}</span>
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
+  const statusFilterOpts = ['all', ...STATUS_OPTIONS].map((s) => `<option value="${esc(s)}"${state.projectListStatusFilter === s ? ' selected' : ''}>${s === 'all' ? 'כל הסטטוסים' : esc(s)}</option>`).join('');
   return `
     <div class="breadcrumb">${state.role === 'instituteManager' ? '' : `<a onclick="backToInstituteList()">כל המכונים</a> / `}${esc(instituteName(state.currentInstituteId))}</div>
     <div class="row" style="margin-bottom:var(--space-4);">
       <h1 style="margin:0;">פרויקטים — ${esc(instituteName(state.currentInstituteId))}</h1>
       <button type="button" class="btn btn-primary" onclick="startNewProject()">+ פרויקט חדש</button>
     </div>
-    <div class="grid" style="grid-template-columns:1fr;">${rows || '<div class="muted">אין פרויקטים עדיין במכון זה.</div>'}</div>`;
+    <div class="filter-bar">
+      <select class="input" onchange="state.projectListStatusFilter=this.value;render()">${statusFilterOpts}</select>
+      <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;">
+        <input type="checkbox" ${state.projectListOverdueOnly ? 'checked' : ''} onchange="state.projectListOverdueOnly=this.checked;render()"> רק באיחור
+      </label>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr;">${rows || `<div class="muted">${state.projects.length ? 'אין פרויקטים התואמים לסינון.' : 'אין פרויקטים עדיין במכון זה.'}</div>`}</div>`;
 }
 
-function projectDetailTemplate() {
-  const f = state.projectForm;
-  const statusOpts = STATUS_OPTIONS.map((s) => `<option value="${esc(s)}"${f.status === s ? ' selected' : ''}>${esc(s)}</option>`).join('');
+function taskListHtml() {
   const tasks = state.currentTasks.map((t) => `
     <div class="task-row">
       <input type="checkbox" ${t.status === 'הושלם' ? 'checked' : ''} onchange="toggleTaskDone('${esc(t.id)}', this.checked)">
@@ -237,6 +308,21 @@ function projectDetailTemplate() {
       </select>
       <button type="button" class="btn btn-ghost btn-sm" onclick="removeTask('${esc(t.id)}')" aria-label="הסרה">✕</button>
     </div>`).join('');
+  const done = state.currentTasks.filter((t) => t.status === 'הושלם').length;
+  const total = state.currentTasks.length;
+  const pct = total ? Math.round((done / total) * 100) : 0;
+  return `
+    ${total ? `<div style="display:flex;align-items:center;gap:8px;">
+      <div class="progress-track" style="flex:1;"><div class="progress-fill" style="width:${pct}%;"></div></div>
+      <span class="muted" style="white-space:nowrap;">${done}/${total} הושלמו</span>
+    </div>` : ''}
+    <div>${tasks || '<div class="muted">אין עדיין משימות בפרויקט.</div>'}</div>`;
+}
+
+function projectDetailTemplate() {
+  const f = state.projectForm;
+  const statusOpts = STATUS_OPTIONS.map((s) => `<option value="${esc(s)}"${f.status === s ? ' selected' : ''}>${esc(s)}</option>`).join('');
+  const overdue = !state.isNewProject && isOverdue({ target_date: f.target_date, status: f.status });
   return `
     <div class="breadcrumb"><a onclick="backToProjectList()">${esc(instituteName(state.currentInstituteId))}</a> / ${esc(f.name || 'פרויקט חדש')}</div>
     <div class="card" style="display:flex;flex-direction:column;gap:var(--space-4);">
@@ -247,21 +333,21 @@ function projectDetailTemplate() {
       <div class="field"><label>תיאור</label><textarea class="input" oninput="state.projectForm.description=this.value">${esc(f.description)}</textarea></div>
       <div class="grid grid-2">
         <div class="field"><label>תאריך התחלה</label><input class="input" type="date" value="${esc(f.start_date)}" oninput="state.projectForm.start_date=this.value"></div>
-        <div class="field"><label>תאריך יעד</label><input class="input" type="date" value="${esc(f.target_date)}" oninput="state.projectForm.target_date=this.value"></div>
+        <div class="field"><label${overdue ? ' class="overdue"' : ''}>תאריך יעד${overdue ? ' — באיחור' : ''}</label><input class="input" type="date" value="${esc(f.target_date)}" oninput="state.projectForm.target_date=this.value"></div>
       </div>
       <div class="grid grid-2">
         <div class="field"><label>אחראי (איש/מחלקה)</label><input class="input" value="${esc(f.owner)}" oninput="state.projectForm.owner=this.value"></div>
         <div class="field"><label>תקציב מוקצה (₪)</label><input class="input" type="number" min="0" value="${esc(f.budget)}" oninput="state.projectForm.budget=this.value"></div>
       </div>
       <div class="row">
-        <button type="button" class="btn btn-primary" onclick="saveProject()">שמירה</button>
-        ${!state.isNewProject ? `<button type="button" class="btn btn-danger" onclick="deleteProject()">מחיקת פרויקט</button>` : ''}
+        <button type="button" class="btn btn-primary" onclick="saveProject()" ${state.saving ? 'disabled' : ''}>${state.saving ? 'שומר…' : 'שמירה'}</button>
+        ${!state.isNewProject ? `<button type="button" class="btn btn-danger" onclick="deleteProject()" ${state.saving ? 'disabled' : ''}>מחיקת פרויקט</button>` : ''}
       </div>
     </div>
     ${!state.isNewProject ? `
     <div class="card" style="margin-top:var(--space-4);display:flex;flex-direction:column;gap:var(--space-3);">
       <h2>חלוקת משימות</h2>
-      <div>${tasks || '<div class="muted">אין עדיין משימות בפרויקט.</div>'}</div>
+      <div id="taskListContainer">${taskListHtml()}</div>
       <div class="grid" style="grid-template-columns:2fr 1fr 1fr auto;gap:8px;align-items:end;">
         <div class="field"><label>משימה חדשה</label><input class="input" id="taskTitleInput" value="${esc(state.taskDraft.title)}" oninput="state.taskDraft.title=this.value" onkeydown="if(event.key==='Enter')addTask()"></div>
         <div class="field"><label>אחראי</label><input class="input" value="${esc(state.taskDraft.assignee)}" oninput="state.taskDraft.assignee=this.value"></div>
@@ -296,6 +382,7 @@ async function submitLogin() {
 }
 
 function logout() {
+  stopPolling();
   sessionStorage.removeItem(SESSION_KEY + '_role');
   sessionStorage.removeItem(SESSION_KEY + '_inst');
   state.role = '';
@@ -329,7 +416,7 @@ async function openInstituteProjects(instituteId) {
   state.currentInstituteId = instituteId;
   state.busy = true; render();
   try {
-    const res = await fetch(PROJECTS_URL + '?institute_id=eq.' + encodeURIComponent(instituteId) + '&order=created_at.desc', { headers: HEADERS_GET });
+    const res = await fetch(PROJECTS_URL + '?institute_id=eq.' + encodeURIComponent(instituteId) + '&select=' + encodeURIComponent(PROJECTS_SELECT) + '&order=created_at.desc', { headers: HEADERS_GET });
     state.projects = res.ok ? await res.json() : [];
   } catch (e) { state.projects = []; }
   state.busy = false;
@@ -378,6 +465,11 @@ async function openProjectDetail(id) {
 async function saveProject() {
   const f = state.projectForm;
   if (!f.name.trim()) { alert('יש להזין שם לפרויקט'); return; }
+  if (f.start_date && f.target_date && f.target_date < f.start_date) {
+    if (!confirm('תאריך היעד מוקדם מתאריך ההתחלה — לשמור בכל זאת?')) return;
+  }
+  const wasNew = state.isNewProject;
+  const prevStatus = state.currentProject ? state.currentProject.status : null;
   const payload = {
     institute_id: state.currentInstituteId,
     institute_name: instituteName(state.currentInstituteId),
@@ -386,8 +478,9 @@ async function saveProject() {
     owner: f.owner.trim(), budget: f.budget === '' ? null : Math.max(0, Number(f.budget) || 0),
     updated_at: new Date().toISOString(),
   };
+  state.saving = true; render();
   try {
-    if (state.isNewProject) {
+    if (wasNew) {
       payload.id = uid('proj_');
       payload.created_at = new Date().toISOString();
       const res = await fetch(PROJECTS_URL, { method: 'POST', headers: { ...HEADERS_JSON, Prefer: 'return=minimal' }, body: JSON.stringify(payload) });
@@ -396,17 +489,39 @@ async function saveProject() {
       const res = await fetch(PROJECTS_URL + '?id=eq.' + encodeURIComponent(state.currentProject.id), { method: 'PATCH', headers: { ...HEADERS_JSON, Prefer: 'return=minimal' }, body: JSON.stringify(payload) });
       if (!res.ok) throw new Error('update failed');
     }
-  } catch (e) { alert('שמירה נכשלה — בדוק/י חיבור לאינטרנט ונסה/י שוב'); return; }
+  } catch (e) {
+    state.saving = false; render();
+    alert('שמירה נכשלה — בדוק/י חיבור לאינטרנט ונסה/י שוב');
+    return;
+  }
+  state.saving = false;
+  // Notify whoever should act next — same identity-key targeting the main app's own push
+  // notifications use, so this reaches exactly the right people without a separate system.
+  if (wasNew) {
+    if (state.role === 'instituteManager') {
+      notifyIdentity(['national', 'president'], 'פרויקט חדש נוצר', `${payload.name} — ${payload.institute_name}`);
+    } else {
+      notifyIdentity(['instituteManager::' + payload.institute_id], 'נוצר פרויקט חדש במכון שלך', payload.name);
+    }
+  } else if (payload.status === 'תקוע' && prevStatus !== 'תקוע') {
+    notifyIdentity(['national', 'president'], 'פרויקט תקוע', `${payload.name} — ${payload.institute_name}`);
+  }
   await openInstituteProjects(state.currentInstituteId);
 }
 
 async function deleteProject() {
   if (!state.currentProject) return;
   if (!confirm('למחוק את הפרויקט "' + state.currentProject.name + '"? הפעולה בלתי הפיכה, כולל כל המשימות שבו.')) return;
+  state.saving = true; render();
   try {
     await fetch(TASKS_URL + '?project_id=eq.' + encodeURIComponent(state.currentProject.id), { method: 'DELETE', headers: HEADERS_JSON });
     await fetch(PROJECTS_URL + '?id=eq.' + encodeURIComponent(state.currentProject.id), { method: 'DELETE', headers: HEADERS_JSON });
-  } catch (e) { alert('המחיקה נכשלה — נסה/י שוב'); return; }
+  } catch (e) {
+    state.saving = false; render();
+    alert('המחיקה נכשלה — נסה/י שוב');
+    return;
+  }
+  state.saving = false;
   await openInstituteProjects(state.currentInstituteId);
 }
 
@@ -445,6 +560,7 @@ async function enterApp() {
     state.view = 'instituteList';
     render();
   }
+  startPolling();
 }
 
 async function init() {
