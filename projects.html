@@ -78,7 +78,27 @@
   .progress-track { background: var(--color-neutral-800); border-radius: 99px; height: 6px; overflow: hidden; }
   .progress-fill { background: var(--color-accent); height: 100%; border-radius: 99px; transition: width .15s ease; }
   .filter-bar { display: flex; align-items: center; gap: 8px; margin-bottom: var(--space-3); flex-wrap: wrap; }
-  .filter-bar select.input { width: auto; }
+  .filter-bar select.input, .filter-bar input.input { width: auto; }
+  .prio-high { background: var(--color-accent-800); color: var(--color-accent-700); }
+  .prio-medium { background: var(--color-neutral-800); color: var(--color-text); }
+  .prio-low { background: #E3F3E9; color: #256B41; }
+  .stat-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-3); margin-bottom: var(--space-4); }
+  @media (max-width: 700px) { .stat-cards { grid-template-columns: repeat(2, 1fr); } }
+  .stat-card { background: var(--color-surface); border: 1px solid var(--color-neutral-700); border-radius: var(--radius-md); padding: var(--space-3) var(--space-4); }
+  .stat-card .stat-kicker { font-size: 11px; opacity: .6; text-transform: uppercase; letter-spacing: .04em; }
+  .stat-card .stat-value { font-size: 22px; font-weight: 700; margin-top: 2px; }
+  table.plain { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.plain th { text-align: right; font-size: 11px; opacity: .6; font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--color-neutral-700); }
+  table.plain td { padding: 8px; border-bottom: 1px solid var(--color-neutral-800); vertical-align: middle; }
+  table.plain tr:last-child td { border-bottom: none; }
+  table.plain tr.clickable-row { cursor: pointer; }
+  table.plain tr.clickable-row:hover { background: var(--color-neutral-800); }
+  .table-wrap { overflow-x: auto; }
+  .doc-row { display: flex; align-items: center; gap: var(--space-3); padding: 8px 0; border-bottom: 1px solid var(--color-neutral-800); }
+  .doc-row:last-child { border-bottom: none; }
+  .update-row { padding: 8px 0; border-bottom: 1px solid var(--color-neutral-800); }
+  .update-row:last-child { border-bottom: none; }
+  .update-meta { font-size: 11px; opacity: .55; margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -90,14 +110,20 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const SUPABASE_STATE_URL = SUPABASE_URL + '/rest/v1/app_state';
 const PROJECTS_URL = SUPABASE_URL + '/rest/v1/projects';
 const TASKS_URL = SUPABASE_URL + '/rest/v1/project_tasks';
+const UPDATES_URL = SUPABASE_URL + '/rest/v1/project_updates';
+const DOCS_URL = SUPABASE_URL + '/rest/v1/project_documents';
 const SEND_NOTIFICATION_URL = SUPABASE_URL + '/functions/v1/send-notification';
 const HEADERS_JSON = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY, 'Content-Type': 'application/json' };
 const HEADERS_GET = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
 const PROJECTS_SELECT = '*,project_tasks(id,status)';
 const POLL_MS = 20000;
+const MAX_DOC_BYTES = 3 * 1024 * 1024;
 
 const STATUS_OPTIONS = ['מתוכנן', 'בביצוע', 'הושלם', 'תקוע'];
 const STATUS_TAG_CLASS = { 'מתוכנן': 'tag-planned', 'בביצוע': 'tag-progress', 'הושלם': 'tag-done', 'תקוע': 'tag-stuck' };
+const PRIORITY_OPTIONS = ['גבוהה', 'בינונית', 'נמוכה'];
+const PRIORITY_TAG_CLASS = { 'גבוהה': 'prio-high', 'בינונית': 'prio-medium', 'נמוכה': 'prio-low' };
+const CATEGORY_OPTIONS = ['תשתיות ובינוי', 'רכש והצטיידות', 'הדרכה וכוח אדם', 'תוכניות וטיפול', 'IT ומערכות', 'אחר'];
 const TASK_STATUS_OPTIONS = ['ממתין', 'בביצוע', 'הושלם'];
 const ROLE_LABELS = { national: 'מנהל תפעול ארצי', president: 'נשיא', instituteManager: 'מנהל/ת מכון' };
 
@@ -132,7 +158,7 @@ let state = {
   loginError: '',
   allInstitutes: [], // [{id, name}]
   rolePasswords: null,
-  view: 'instituteList', // instituteList | projectList | projectDetail
+  view: 'instituteList', // instituteList | projectList | projectDetail | overview
   currentInstituteId: null,
   projects: [],
   projectCounts: {},
@@ -141,11 +167,22 @@ let state = {
   projectForm: null,
   currentTasks: [],
   taskDraft: { title: '', assignee: '', dueDate: '' },
+  currentUpdates: [],
+  updateDraft: '',
+  currentDocuments: [],
+  docUploadError: '',
+  docUploading: false,
   busy: false,
   saving: false,
   fatalError: '',
   projectListStatusFilter: 'all',
   projectListOverdueOnly: false,
+  projectListHideDone: false,
+  projectListSearch: '',
+  overviewProjects: [],
+  overviewLoading: false,
+  overviewSearch: '',
+  overviewFrom: null, // where to return to when leaving the overview screen
 };
 
 let pollTimer = null;
@@ -221,6 +258,7 @@ function topbarTemplate() {
       <div class="brand-sub">${esc(ROLE_LABELS[state.role] || '')}${state.role === 'instituteManager' ? ' · ' + esc(instituteName(state.myInstituteId)) : ''}</div>
     </div>
     <div style="display:flex;gap:8px;">
+      <button type="button" class="btn btn-sm" onclick="openOverview()">📊 סקירה כללית</button>
       <a class="btn btn-sm" href="index.html">🏠 למערכת הראשית</a>
       <button type="button" class="btn btn-sm" onclick="logout()">יציאה</button>
     </div>
@@ -233,6 +271,7 @@ function appBodyTemplate() {
   if (state.view === 'instituteList') return instituteListTemplate();
   if (state.view === 'projectList') return projectListTemplate();
   if (state.view === 'projectDetail') return projectDetailTemplate();
+  if (state.view === 'overview') return overviewTemplate();
   return '';
 }
 
@@ -251,9 +290,12 @@ function instituteListTemplate() {
 }
 
 function visibleProjects() {
+  const q = (state.projectListSearch || '').trim().toLowerCase();
   return state.projects.filter((p) => {
     if (state.projectListStatusFilter !== 'all' && p.status !== state.projectListStatusFilter) return false;
     if (state.projectListOverdueOnly && !isOverdue(p)) return false;
+    if (state.projectListHideDone && p.status === 'הושלם') return false;
+    if (q && !(p.name || '').toLowerCase().includes(q) && !(p.description || '').toLowerCase().includes(q) && !(p.owner || '').toLowerCase().includes(q)) return false;
     return true;
   });
 }
@@ -268,8 +310,11 @@ function projectListTemplate() {
     <div class="card card-clickable" onclick="openProjectDetail('${esc(p.id)}')">
       <div class="row">
         <div style="display:flex;flex-direction:column;gap:4px;flex:1;">
-          <div style="font-weight:600;">${esc(p.name)}</div>
-          <div class="muted">${p.owner ? '👤 ' + esc(p.owner) : ''}${p.target_date ? ' · <span class="' + (overdue ? 'overdue' : '') + '">יעד: ' + esc(p.target_date) + (overdue ? ' (באיחור)' : '') + '</span>' : ''}${p.budget ? ' · ' + fmtILS(p.budget) : ''}</div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <div style="font-weight:600;">${esc(p.name)}</div>
+            ${p.priority ? `<span class="tag ${PRIORITY_TAG_CLASS[p.priority] || 'prio-medium'}">${esc(p.priority)}</span>` : ''}
+          </div>
+          <div class="muted">${p.category ? esc(p.category) + ' · ' : ''}${p.owner ? '👤 ' + esc(p.owner) : ''}${p.target_date ? ' · <span class="' + (overdue ? 'overdue' : '') + '">יעד: ' + esc(p.target_date) + (overdue ? ' (באיחור)' : '') + '</span>' : ''}${p.budget ? ' · ' + fmtILS(p.budget) : ''}</div>
           ${prog.total ? `<div style="display:flex;align-items:center;gap:6px;margin-top:2px;">
             <div class="progress-track" style="flex:1;max-width:160px;"><div class="progress-fill" style="width:${pct}%;"></div></div>
             <span class="muted">${prog.done}/${prog.total} משימות</span>
@@ -287,9 +332,13 @@ function projectListTemplate() {
       <button type="button" class="btn btn-primary" onclick="startNewProject()">+ פרויקט חדש</button>
     </div>
     <div class="filter-bar">
+      <input class="input" placeholder="חיפוש לפי שם, תיאור או אחראי…" value="${esc(state.projectListSearch)}" oninput="state.projectListSearch=this.value;render()" style="min-width:220px;">
       <select class="input" onchange="state.projectListStatusFilter=this.value;render()">${statusFilterOpts}</select>
       <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;">
         <input type="checkbox" ${state.projectListOverdueOnly ? 'checked' : ''} onchange="state.projectListOverdueOnly=this.checked;render()"> רק באיחור
+      </label>
+      <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;">
+        <input type="checkbox" ${state.projectListHideDone ? 'checked' : ''} onchange="state.projectListHideDone=this.checked;render()"> הסתר שהושלמו
       </label>
     </div>
     <div class="grid" style="grid-template-columns:1fr;">${rows || `<div class="muted">${state.projects.length ? 'אין פרויקטים התואמים לסינון.' : 'אין פרויקטים עדיין במכון זה.'}</div>`}</div>`;
@@ -319,9 +368,32 @@ function taskListHtml() {
     <div>${tasks || '<div class="muted">אין עדיין משימות בפרויקט.</div>'}</div>`;
 }
 
+function updatesListHtml() {
+  const rows = state.currentUpdates.map((u) => `
+    <div class="update-row">
+      <div>${esc(u.text)}</div>
+      <div class="update-meta">${esc(ROLE_LABELS[u.author_role] || u.author_role || '')} · ${esc((u.created_at || '').slice(0, 16).replace('T', ' '))}</div>
+    </div>`).join('');
+  return rows || '<div class="muted">אין עדיין עדכונים.</div>';
+}
+
+function documentsListHtml() {
+  const rows = state.currentDocuments.map((d) => `
+    <div class="doc-row">
+      <span>📎</span>
+      <div style="flex:1;">
+        <a href="${d.data_url}" download="${esc(d.file_name)}" style="text-decoration:underline;">${esc(d.file_name)}</a>
+      </div>
+      <button type="button" class="btn btn-ghost btn-sm" onclick="removeDocument('${esc(d.id)}')" aria-label="הסרה">✕</button>
+    </div>`).join('');
+  return rows || '<div class="muted">אין עדיין מסמכים מצורפים.</div>';
+}
+
 function projectDetailTemplate() {
   const f = state.projectForm;
   const statusOpts = STATUS_OPTIONS.map((s) => `<option value="${esc(s)}"${f.status === s ? ' selected' : ''}>${esc(s)}</option>`).join('');
+  const priorityOpts = PRIORITY_OPTIONS.map((p) => `<option value="${esc(p)}"${f.priority === p ? ' selected' : ''}>${esc(p)}</option>`).join('');
+  const categoryOpts = ['', ...CATEGORY_OPTIONS].map((c) => `<option value="${esc(c)}"${f.category === c ? ' selected' : ''}>${c ? esc(c) : 'ללא קטגוריה'}</option>`).join('');
   const overdue = !state.isNewProject && isOverdue({ target_date: f.target_date, status: f.status });
   return `
     <div class="breadcrumb"><a onclick="backToProjectList()">${esc(instituteName(state.currentInstituteId))}</a> / ${esc(f.name || 'פרויקט חדש')}</div>
@@ -329,6 +401,10 @@ function projectDetailTemplate() {
       <div class="grid grid-2">
         <div class="field"><label>שם הפרויקט</label><input class="input" value="${esc(f.name)}" oninput="state.projectForm.name=this.value"></div>
         <div class="field"><label>סטטוס</label><select class="input" onchange="state.projectForm.status=this.value">${statusOpts}</select></div>
+      </div>
+      <div class="grid grid-2">
+        <div class="field"><label>עדיפות</label><select class="input" onchange="state.projectForm.priority=this.value">${priorityOpts}</select></div>
+        <div class="field"><label>קטגוריה</label><select class="input" onchange="state.projectForm.category=this.value">${categoryOpts}</select></div>
       </div>
       <div class="field"><label>תיאור</label><textarea class="input" oninput="state.projectForm.description=this.value">${esc(f.description)}</textarea></div>
       <div class="grid grid-2">
@@ -354,7 +430,25 @@ function projectDetailTemplate() {
         <div class="field"><label>יעד</label><input class="input" type="date" value="${esc(state.taskDraft.dueDate)}" oninput="state.taskDraft.dueDate=this.value"></div>
         <button type="button" class="btn" onclick="addTask()">הוספה</button>
       </div>
-    </div>` : '<div class="muted" style="margin-top:8px;">חלוקת משימות זמינה לאחר השמירה הראשונה.</div>'}
+    </div>
+    <div class="card" style="margin-top:var(--space-4);display:flex;flex-direction:column;gap:var(--space-3);">
+      <h2>עדכונים</h2>
+      <div id="updatesListContainer">${updatesListHtml()}</div>
+      <div style="display:flex;gap:8px;align-items:end;">
+        <div class="field" style="flex:1;"><label>עדכון חדש</label><input class="input" id="updateDraftInput" value="${esc(state.updateDraft)}" oninput="state.updateDraft=this.value" onkeydown="if(event.key==='Enter')addUpdate()"></div>
+        <button type="button" class="btn" onclick="addUpdate()">הוספה</button>
+      </div>
+    </div>
+    <div class="card" style="margin-top:var(--space-4);display:flex;flex-direction:column;gap:var(--space-3);">
+      <h2>מסמכים</h2>
+      <div id="documentsListContainer">${documentsListHtml()}</div>
+      <div>
+        <input type="file" id="docFileInput" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx" onchange="uploadDocument(this.files[0])" ${state.docUploading ? 'disabled' : ''}>
+        ${state.docUploading ? '<span class="muted"> מעלה…</span>' : ''}
+        ${state.docUploadError ? `<div class="error-box" style="margin-top:8px;">${esc(state.docUploadError)}</div>` : ''}
+        <div class="muted" style="margin-top:4px;">עד 3MB לקובץ.</div>
+      </div>
+    </div>` : '<div class="muted" style="margin-top:8px;">חלוקת משימות, עדכונים ומסמכים זמינים לאחר השמירה הראשונה.</div>'}
   `;
 }
 
@@ -432,7 +526,7 @@ function backToInstituteList() {
 function backToProjectList() { openInstituteProjects(state.currentInstituteId); }
 
 function blankProjectForm() {
-  return { name: '', description: '', status: 'מתוכנן', start_date: '', target_date: '', owner: '', budget: '' };
+  return { name: '', description: '', status: 'מתוכנן', priority: 'בינונית', category: '', start_date: '', target_date: '', owner: '', budget: '' };
 }
 
 function startNewProject() {
@@ -440,25 +534,37 @@ function startNewProject() {
   state.currentProject = null;
   state.projectForm = blankProjectForm();
   state.currentTasks = [];
+  state.currentUpdates = [];
+  state.currentDocuments = [];
+  state.docUploadError = '';
   state.view = 'projectDetail';
   render();
 }
 
 async function openProjectDetail(id) {
-  const p = state.projects.find((x) => x.id === id);
+  const p = state.projects.find((x) => x.id === id) || state.overviewProjects.find((x) => x.id === id);
   if (!p) return;
   state.isNewProject = false;
   state.currentProject = p;
   state.projectForm = {
     name: p.name || '', description: p.description || '', status: p.status || 'מתוכנן',
+    priority: p.priority || 'בינונית', category: p.category || '',
     start_date: p.start_date || '', target_date: p.target_date || '', owner: p.owner || '', budget: p.budget || '',
   };
+  state.currentInstituteId = p.institute_id;
   state.view = 'projectDetail';
+  state.docUploadError = '';
   render();
   try {
-    const res = await fetch(TASKS_URL + '?project_id=eq.' + encodeURIComponent(id) + '&order=created_at.asc', { headers: HEADERS_GET });
-    state.currentTasks = res.ok ? await res.json() : [];
-  } catch (e) { state.currentTasks = []; }
+    const [tasksRes, updatesRes, docsRes] = await Promise.all([
+      fetch(TASKS_URL + '?project_id=eq.' + encodeURIComponent(id) + '&order=created_at.asc', { headers: HEADERS_GET }),
+      fetch(UPDATES_URL + '?project_id=eq.' + encodeURIComponent(id) + '&order=created_at.desc', { headers: HEADERS_GET }),
+      fetch(DOCS_URL + '?project_id=eq.' + encodeURIComponent(id) + '&order=created_at.desc', { headers: HEADERS_GET }),
+    ]);
+    state.currentTasks = tasksRes.ok ? await tasksRes.json() : [];
+    state.currentUpdates = updatesRes.ok ? await updatesRes.json() : [];
+    state.currentDocuments = docsRes.ok ? await docsRes.json() : [];
+  } catch (e) { state.currentTasks = []; state.currentUpdates = []; state.currentDocuments = []; }
   render();
 }
 
@@ -474,6 +580,7 @@ async function saveProject() {
     institute_id: state.currentInstituteId,
     institute_name: instituteName(state.currentInstituteId),
     name: f.name.trim(), description: f.description.trim(), status: f.status,
+    priority: f.priority || 'בינונית', category: f.category || null,
     start_date: f.start_date || null, target_date: f.target_date || null,
     owner: f.owner.trim(), budget: f.budget === '' ? null : Math.max(0, Number(f.budget) || 0),
     updated_at: new Date().toISOString(),
@@ -549,6 +656,150 @@ async function removeTask(taskId) {
   try { await fetch(TASKS_URL + '?id=eq.' + encodeURIComponent(taskId), { method: 'DELETE', headers: HEADERS_JSON }); } catch (e) {}
   state.currentTasks = state.currentTasks.filter((t) => t.id !== taskId);
   render();
+}
+
+async function addUpdate() {
+  const text = (state.updateDraft || '').trim();
+  if (!text || !state.currentProject) return;
+  const row = { id: uid('upd_'), project_id: state.currentProject.id, text, author_role: state.role, created_at: new Date().toISOString() };
+  state.currentUpdates = [row, ...state.currentUpdates];
+  state.updateDraft = '';
+  const container = document.getElementById('updatesListContainer');
+  if (container) container.innerHTML = updatesListHtml();
+  const input = document.getElementById('updateDraftInput');
+  if (input) input.value = '';
+  try {
+    const res = await fetch(UPDATES_URL, { method: 'POST', headers: { ...HEADERS_JSON, Prefer: 'return=minimal' }, body: JSON.stringify(row) });
+    if (!res.ok) throw new Error('add update failed');
+  } catch (e) {
+    state.currentUpdates = state.currentUpdates.filter((u) => u.id !== row.id);
+    const c = document.getElementById('updatesListContainer');
+    if (c) c.innerHTML = updatesListHtml();
+    alert('הוספת העדכון נכשלה — נסה/י שוב');
+  }
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+async function uploadDocument(file) {
+  if (!file || !state.currentProject) return;
+  state.docUploadError = '';
+  if (file.size > MAX_DOC_BYTES) {
+    state.docUploadError = `הקובץ גדול מדי (${Math.round(file.size / 1024 / 1024 * 10) / 10}MB) — המגבלה היא 3MB.`;
+    render();
+    return;
+  }
+  state.docUploading = true; render();
+  try {
+    const dataUrl = await readFileAsDataUrl(file);
+    const row = { id: uid('doc_'), project_id: state.currentProject.id, file_name: file.name, file_type: file.type || '', data_url: dataUrl, created_at: new Date().toISOString() };
+    const res = await fetch(DOCS_URL, { method: 'POST', headers: { ...HEADERS_JSON, Prefer: 'return=minimal' }, body: JSON.stringify(row) });
+    if (!res.ok) throw new Error('upload failed');
+    state.currentDocuments = [row, ...state.currentDocuments];
+  } catch (e) {
+    state.docUploadError = 'העלאת הקובץ נכשלה — נסה/י שוב.';
+  }
+  state.docUploading = false;
+  const fileInput = document.getElementById('docFileInput');
+  if (fileInput) fileInput.value = '';
+  render();
+}
+
+async function removeDocument(docId) {
+  if (!confirm('להסיר את המסמך?')) return;
+  try { await fetch(DOCS_URL + '?id=eq.' + encodeURIComponent(docId), { method: 'DELETE', headers: HEADERS_JSON }); } catch (e) {}
+  state.currentDocuments = state.currentDocuments.filter((d) => d.id !== docId);
+  render();
+}
+
+function overviewScopeInstituteIds() {
+  return state.role === 'instituteManager' ? [state.myInstituteId] : state.allInstitutes.map((i) => i.id);
+}
+
+async function openOverview() {
+  state.overviewFrom = state.view === 'overview' ? state.overviewFrom : state.view;
+  state.view = 'overview';
+  state.overviewLoading = true;
+  render();
+  try {
+    const ids = overviewScopeInstituteIds();
+    const filter = state.role === 'instituteManager'
+      ? '&institute_id=eq.' + encodeURIComponent(state.myInstituteId)
+      : '';
+    const res = await fetch(PROJECTS_URL + '?select=' + encodeURIComponent(PROJECTS_SELECT) + filter + '&order=target_date.asc.nullslast', { headers: HEADERS_GET });
+    state.overviewProjects = res.ok ? await res.json() : [];
+  } catch (e) { state.overviewProjects = []; }
+  state.overviewLoading = false;
+  render();
+}
+
+function backFromOverview() {
+  const from = state.overviewFrom;
+  if (from === 'projectList' && state.currentInstituteId) { openInstituteProjects(state.currentInstituteId); return; }
+  state.view = 'instituteList';
+  fetchProjectCounts().then(render);
+  render();
+}
+
+function overviewVisibleProjects() {
+  const q = (state.overviewSearch || '').trim().toLowerCase();
+  if (!q) return state.overviewProjects;
+  return state.overviewProjects.filter((p) => (p.name || '').toLowerCase().includes(q) || (p.institute_name || '').toLowerCase().includes(q) || (p.owner || '').toLowerCase().includes(q));
+}
+
+function overviewTemplate() {
+  if (state.overviewLoading) return '<div class="loading-box">טוען סקירה…</div>';
+  const all = state.overviewProjects;
+  const byStatus = {};
+  STATUS_OPTIONS.forEach((s) => { byStatus[s] = 0; });
+  let totalBudget = 0;
+  let overdueCount = 0;
+  all.forEach((p) => {
+    byStatus[p.status] = (byStatus[p.status] || 0) + 1;
+    totalBudget += Number(p.budget) || 0;
+    if (isOverdue(p)) overdueCount += 1;
+  });
+  const filtered = overviewVisibleProjects();
+  const rows = filtered.map((p) => {
+    const prog = taskProgress(p);
+    const overdue = isOverdue(p);
+    return `
+    <tr class="clickable-row" onclick="openProjectDetail('${esc(p.id)}')">
+      <td>${esc(p.name)}${p.priority === 'גבוהה' ? ' 🔴' : ''}</td>
+      <td>${esc(p.institute_name || '')}</td>
+      <td><span class="tag ${STATUS_TAG_CLASS[p.status] || 'tag-planned'}">${esc(p.status)}</span></td>
+      <td>${esc(p.owner || '—')}</td>
+      <td class="${overdue ? 'overdue' : ''}">${p.target_date ? esc(p.target_date) : '—'}</td>
+      <td>${p.budget ? fmtILS(p.budget) : '—'}</td>
+      <td>${prog.total ? `${prog.done}/${prog.total}` : '—'}</td>
+    </tr>`;
+  }).join('');
+  const backLabel = state.role === 'instituteManager' ? esc(instituteName(state.myInstituteId)) : 'כל המכונים';
+  return `
+    <div class="breadcrumb"><a onclick="backFromOverview()">${backLabel}</a> / סקירה כללית</div>
+    <h1>📊 סקירה כללית${state.role === 'instituteManager' ? ' — ' + esc(instituteName(state.myInstituteId)) : ''}</h1>
+    <div class="stat-cards">
+      <div class="stat-card"><div class="stat-kicker">סה"כ פרויקטים</div><div class="stat-value">${all.length}</div></div>
+      <div class="stat-card"><div class="stat-kicker">באיחור</div><div class="stat-value" style="${overdueCount ? 'color:var(--color-accent-700);' : ''}">${overdueCount}</div></div>
+      <div class="stat-card"><div class="stat-kicker">תקועים</div><div class="stat-value">${byStatus['תקוע'] || 0}</div></div>
+      <div class="stat-card"><div class="stat-kicker">תקציב כולל מוקצה</div><div class="stat-value" style="font-size:17px;">${fmtILS(totalBudget)}</div></div>
+    </div>
+    <div class="filter-bar">
+      <input class="input" placeholder="חיפוש לפי שם, מכון או אחראי…" value="${esc(state.overviewSearch)}" oninput="state.overviewSearch=this.value;render()" style="min-width:240px;">
+    </div>
+    <div class="card table-wrap">
+      <table class="plain">
+        <thead><tr><th>פרויקט</th><th>מכון</th><th>סטטוס</th><th>אחראי</th><th>יעד</th><th>תקציב</th><th>משימות</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="7" class="muted">אין פרויקטים.</td></tr>'}</tbody>
+      </table>
+    </div>`;
 }
 
 async function enterApp() {
