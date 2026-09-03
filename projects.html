@@ -38,7 +38,8 @@
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: var(--color-bg); color: var(--color-text); font-family: 'Heebo', system-ui, sans-serif; }
   a { color: inherit; }
-  .wrap { max-width: 960px; margin: 0 auto; padding: var(--space-6) var(--space-4) 60px; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: var(--space-6) var(--space-4) 60px; }
+  .wrap-narrow { max-width: 960px; margin: 0 auto; }
   .topbar { display: flex; align-items: center; justify-content: space-between; padding: var(--space-4) var(--space-6); background: var(--color-surface); border-bottom: 1px solid var(--color-neutral-700); position: sticky; top: 0; z-index: 5; }
   .brand { font-weight: 700; font-size: 17px; }
   .brand-sub { font-size: 12px; opacity: .6; margin-top: 2px; }
@@ -99,6 +100,40 @@
   .update-row { padding: 8px 0; border-bottom: 1px solid var(--color-neutral-800); }
   .update-row:last-child { border-bottom: none; }
   .update-meta { font-size: 11px; opacity: .55; margin-top: 2px; }
+
+  .avatar { display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; color: #fff; font-weight: 700; flex-shrink: 0; line-height: 1; }
+  .avatar-sm { width: 22px; height: 22px; font-size: 10px; }
+  .avatar-md { width: 30px; height: 30px; font-size: 12px; }
+  .avatar-stack { display: flex; }
+  .avatar-stack .avatar { margin-inline-start: -6px; border: 2px solid var(--color-surface); }
+  .avatar-stack .avatar:first-child { margin-inline-start: 0; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; background: var(--color-neutral-800); border-radius: 99px; padding: 3px 6px 3px 10px; font-size: 12px; }
+  .chip button { border: none; background: none; cursor: pointer; color: var(--color-text); opacity: .5; font-size: 13px; line-height: 1; padding: 2px; }
+  .chip button:hover { opacity: 1; }
+  .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+  .add-chip-row { display: flex; gap: 8px; align-items: center; }
+  .add-chip-row select.input { width: auto; flex: 1; }
+
+  .view-toggle { display: inline-flex; border: 1px solid var(--color-neutral-700); border-radius: var(--radius-sm); overflow: hidden; }
+  .view-toggle button { border: none; background: var(--color-surface); padding: 7px 14px; font-family: inherit; font-size: 13px; cursor: pointer; color: var(--color-text); }
+  .view-toggle button.active { background: var(--color-accent); color: #fff; }
+
+  .board-wrap { display: flex; gap: var(--space-4); overflow-x: auto; padding-bottom: 8px; align-items: flex-start; }
+  .board-col { flex: 0 0 270px; background: var(--color-neutral-800); border-radius: var(--radius-md); padding: var(--space-3); min-height: 80px; }
+  .board-col.drag-over { outline: 2px dashed var(--color-accent); outline-offset: -2px; }
+  .board-col-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px 10px; }
+  .board-col-title { font-weight: 700; font-size: 13px; display: flex; align-items: center; gap: 6px; }
+  .board-col-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .board-col-count { font-size: 12px; opacity: .55; background: var(--color-surface); border-radius: 99px; padding: 1px 8px; }
+  .board-card { background: var(--color-surface); border: 1px solid var(--color-neutral-700); border-inline-start: 3px solid var(--color-neutral-500); border-radius: var(--radius-sm); padding: 10px 12px; margin-bottom: 8px; cursor: grab; box-shadow: var(--shadow-sm, 0 1px 2px rgba(43,32,21,.06)); transition: box-shadow .12s ease, transform .12s ease; }
+  .board-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
+  .board-card.dragging { opacity: .4; }
+  .board-card.prio-border-high { border-inline-start-color: var(--color-accent-700); }
+  .board-card.prio-border-medium { border-inline-start-color: var(--color-neutral-500); }
+  .board-card.prio-border-low { border-inline-start-color: #4E9187; }
+  .board-card-title { font-weight: 600; font-size: 13px; margin-bottom: 6px; }
+  .board-card-meta { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 8px; }
+  .board-empty { text-align: center; padding: 20px 8px; opacity: .4; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -147,6 +182,30 @@ function fmtILS(n) { const v = Math.round(Number(n) || 0); return v.toLocaleStri
 function roleKey(role, instituteId) { return role === 'instituteManager' ? 'institute_' + instituteId : role; }
 function uid(prefix) { return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
+const AVATAR_COLORS = ['#C2410C', '#0F766E', '#7C3AED', '#B8480D', '#0369A1', '#A16207', '#BE185D', '#15803D'];
+function nameInitials(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  return (parts[0][0] + (parts[1] ? parts[1][0] : '')).toUpperCase();
+}
+function nameColor(name) {
+  let h = 0;
+  const s = String(name || '');
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return AVATAR_COLORS[h % AVATAR_COLORS.length];
+}
+function avatarHtml(name, size) {
+  const cls = size === 'sm' ? 'avatar-sm' : 'avatar-md';
+  return `<span class="avatar ${cls}" style="background:${nameColor(name)};" title="${esc(name)}">${esc(nameInitials(name))}</span>`;
+}
+function avatarStackHtml(names, size) {
+  if (!names || !names.length) return '';
+  return `<span class="avatar-stack">${names.map((n) => avatarHtml(n, size)).join('')}</span>`;
+}
+function instituteEmployees(instituteId) {
+  return (state.employeesByInstitute && state.employeesByInstitute[instituteId]) || [];
+}
+
 const SESSION_KEY = 'fp_projects_session_v1';
 let state = {
   screen: 'loading', // loading | login | app
@@ -157,7 +216,11 @@ let state = {
   loginPassword: '',
   loginError: '',
   allInstitutes: [], // [{id, name}]
+  employeesByInstitute: {}, // instituteId -> [names]
   rolePasswords: null,
+  projectListViewMode: 'board', // board | list
+  newTeamMemberPick: '',
+  dragProjectId: null,
   view: 'instituteList', // instituteList | projectList | projectDetail | overview
   currentInstituteId: null,
   projects: [],
@@ -300,36 +363,27 @@ function visibleProjects() {
   });
 }
 
+function projectCardMetaHtml(p) {
+  const overdue = isOverdue(p);
+  const team = Array.isArray(p.team) ? p.team : [];
+  return `${p.category ? esc(p.category) + ' · ' : ''}${p.target_date ? '<span class="' + (overdue ? 'overdue' : '') + '">יעד: ' + esc(p.target_date) + (overdue ? ' (באיחור)' : '') + '</span>' : ''}${p.budget ? ' · ' + fmtILS(p.budget) : ''}`;
+}
+
 function projectListTemplate() {
   const filtered = visibleProjects();
-  const rows = filtered.map((p) => {
-    const prog = taskProgress(p);
-    const pct = prog.total ? Math.round((prog.done / prog.total) * 100) : 0;
-    const overdue = isOverdue(p);
-    return `
-    <div class="card card-clickable" onclick="openProjectDetail('${esc(p.id)}')">
-      <div class="row">
-        <div style="display:flex;flex-direction:column;gap:4px;flex:1;">
-          <div style="display:flex;align-items:center;gap:8px;">
-            <div style="font-weight:600;">${esc(p.name)}</div>
-            ${p.priority ? `<span class="tag ${PRIORITY_TAG_CLASS[p.priority] || 'prio-medium'}">${esc(p.priority)}</span>` : ''}
-          </div>
-          <div class="muted">${p.category ? esc(p.category) + ' · ' : ''}${p.owner ? '👤 ' + esc(p.owner) : ''}${p.target_date ? ' · <span class="' + (overdue ? 'overdue' : '') + '">יעד: ' + esc(p.target_date) + (overdue ? ' (באיחור)' : '') + '</span>' : ''}${p.budget ? ' · ' + fmtILS(p.budget) : ''}</div>
-          ${prog.total ? `<div style="display:flex;align-items:center;gap:6px;margin-top:2px;">
-            <div class="progress-track" style="flex:1;max-width:160px;"><div class="progress-fill" style="width:${pct}%;"></div></div>
-            <span class="muted">${prog.done}/${prog.total} משימות</span>
-          </div>` : ''}
-        </div>
-        <span class="tag ${STATUS_TAG_CLASS[p.status] || 'tag-planned'}">${esc(p.status)}</span>
-      </div>
-    </div>`;
-  }).join('');
   const statusFilterOpts = ['all', ...STATUS_OPTIONS].map((s) => `<option value="${esc(s)}"${state.projectListStatusFilter === s ? ' selected' : ''}>${s === 'all' ? 'כל הסטטוסים' : esc(s)}</option>`).join('');
+  const body = state.projectListViewMode === 'board' ? boardHtml(filtered) : listHtml(filtered);
   return `
     <div class="breadcrumb">${state.role === 'instituteManager' ? '' : `<a onclick="backToInstituteList()">כל המכונים</a> / `}${esc(instituteName(state.currentInstituteId))}</div>
     <div class="row" style="margin-bottom:var(--space-4);">
       <h1 style="margin:0;">פרויקטים — ${esc(instituteName(state.currentInstituteId))}</h1>
-      <button type="button" class="btn btn-primary" onclick="startNewProject()">+ פרויקט חדש</button>
+      <div style="display:flex;gap:10px;align-items:center;">
+        <div class="view-toggle">
+          <button type="button" class="${state.projectListViewMode === 'board' ? 'active' : ''}" onclick="state.projectListViewMode='board';render()">🗂️ לוח</button>
+          <button type="button" class="${state.projectListViewMode === 'list' ? 'active' : ''}" onclick="state.projectListViewMode='list';render()">📋 רשימה</button>
+        </div>
+        <button type="button" class="btn btn-primary" onclick="startNewProject()">+ פרויקט חדש</button>
+      </div>
     </div>
     <div class="filter-bar">
       <input class="input" placeholder="חיפוש לפי שם, תיאור או אחראי…" value="${esc(state.projectListSearch)}" oninput="state.projectListSearch=this.value;render()" style="min-width:220px;">
@@ -341,13 +395,115 @@ function projectListTemplate() {
         <input type="checkbox" ${state.projectListHideDone ? 'checked' : ''} onchange="state.projectListHideDone=this.checked;render()"> הסתר שהושלמו
       </label>
     </div>
-    <div class="grid" style="grid-template-columns:1fr;">${rows || `<div class="muted">${state.projects.length ? 'אין פרויקטים התואמים לסינון.' : 'אין פרויקטים עדיין במכון זה.'}</div>`}</div>`;
+    ${body}`;
+}
+
+function listHtml(filtered) {
+  const rows = filtered.map((p) => {
+    const prog = taskProgress(p);
+    const pct = prog.total ? Math.round((prog.done / prog.total) * 100) : 0;
+    const team = Array.isArray(p.team) ? p.team : [];
+    return `
+    <div class="card card-clickable" onclick="openProjectDetail('${esc(p.id)}')">
+      <div class="row">
+        <div style="display:flex;flex-direction:column;gap:4px;flex:1;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <div style="font-weight:600;">${esc(p.name)}</div>
+            ${p.priority ? `<span class="tag ${PRIORITY_TAG_CLASS[p.priority] || 'prio-medium'}">${esc(p.priority)}</span>` : ''}
+          </div>
+          <div class="muted">${projectCardMetaHtml(p)}</div>
+          ${prog.total ? `<div style="display:flex;align-items:center;gap:6px;margin-top:2px;">
+            <div class="progress-track" style="flex:1;max-width:160px;"><div class="progress-fill" style="width:${pct}%;"></div></div>
+            <span class="muted">${prog.done}/${prog.total} משימות</span>
+          </div>` : ''}
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
+          <span class="tag ${STATUS_TAG_CLASS[p.status] || 'tag-planned'}">${esc(p.status)}</span>
+          ${avatarStackHtml(team.length ? team : (p.owner ? [p.owner] : []), 'sm')}
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+  return `<div class="grid" style="grid-template-columns:1fr;">${rows || `<div class="muted">${state.projects.length ? 'אין פרויקטים התואמים לסינון.' : 'אין פרויקטים עדיין במכון זה.'}</div>`}</div>`;
+}
+
+const BOARD_COL_DOT = { 'מתוכנן': 'var(--color-neutral-500)', 'בביצוע': 'var(--color-accent-500)', 'תקוע': 'var(--color-accent-700)', 'הושלם': '#256B41' };
+function boardHtml(filtered) {
+  if (!filtered.length) return `<div class="muted">${state.projects.length ? 'אין פרויקטים התואמים לסינון.' : 'אין פרויקטים עדיין במכון זה — לחצו על "+ פרויקט חדש" כדי להתחיל.'}</div>`;
+  const cols = STATUS_OPTIONS.map((status) => {
+    const inCol = filtered.filter((p) => p.status === status);
+    const cards = inCol.map((p) => {
+      const prog = taskProgress(p);
+      const pct = prog.total ? Math.round((prog.done / prog.total) * 100) : 0;
+      const team = Array.isArray(p.team) ? p.team : [];
+      const prioClass = p.priority === 'גבוהה' ? 'prio-border-high' : p.priority === 'נמוכה' ? 'prio-border-low' : 'prio-border-medium';
+      return `
+      <div class="board-card ${prioClass}" draggable="true" ondragstart="onCardDragStart(event,'${esc(p.id)}')" ondragend="onCardDragEnd(event)" onclick="openProjectDetail('${esc(p.id)}')">
+        <div class="board-card-title">${esc(p.name)}</div>
+        <div class="muted" style="font-size:11px;">${projectCardMetaHtml(p)}</div>
+        ${prog.total ? `<div style="display:flex;align-items:center;gap:6px;margin-top:8px;">
+          <div class="progress-track" style="flex:1;"><div class="progress-fill" style="width:${pct}%;"></div></div>
+          <span class="muted" style="font-size:10px;white-space:nowrap;">${prog.done}/${prog.total} משימות</span>
+        </div>` : ''}
+        <div class="board-card-meta">
+          ${p.priority ? `<span class="tag ${PRIORITY_TAG_CLASS[p.priority] || 'prio-medium'}" style="font-size:10px;padding:2px 8px;">${esc(p.priority)}</span>` : '<span></span>'}
+          ${avatarStackHtml(team.length ? team : (p.owner ? [p.owner] : []), 'sm')}
+        </div>
+      </div>`;
+    }).join('');
+    return `
+    <div class="board-col" data-status="${esc(status)}" ondragover="onColDragOver(event)" ondragleave="onColDragLeave(event)" ondrop="onColDrop(event,'${esc(status)}')">
+      <div class="board-col-head">
+        <div class="board-col-title"><span class="board-col-dot" style="background:${BOARD_COL_DOT[status]};"></span>${esc(status)}</div>
+        <span class="board-col-count">${inCol.length}</span>
+      </div>
+      ${cards || '<div class="board-empty">גררו לכאן פרויקט</div>'}
+    </div>`;
+  }).join('');
+  return `<div class="board-wrap">${cols}</div>`;
+}
+
+function onCardDragStart(ev, projectId) {
+  state.dragProjectId = projectId;
+  ev.dataTransfer.effectAllowed = 'move';
+  ev.currentTarget.classList.add('dragging');
+}
+function onCardDragEnd(ev) { ev.currentTarget.classList.remove('dragging'); state.dragProjectId = null; }
+function onColDragOver(ev) { ev.preventDefault(); ev.currentTarget.classList.add('drag-over'); }
+function onColDragLeave(ev) { ev.currentTarget.classList.remove('drag-over'); }
+function onColDrop(ev, newStatus) {
+  ev.preventDefault();
+  ev.currentTarget.classList.remove('drag-over');
+  const projectId = state.dragProjectId;
+  state.dragProjectId = null;
+  if (!projectId) return;
+  moveProjectToStatus(projectId, newStatus);
+}
+
+async function moveProjectToStatus(projectId, newStatus) {
+  const p = state.projects.find((x) => x.id === projectId);
+  if (!p || p.status === newStatus) return;
+  const prevStatus = p.status;
+  p.status = newStatus;
+  render();
+  try {
+    const res = await fetch(PROJECTS_URL + '?id=eq.' + encodeURIComponent(projectId), { method: 'PATCH', headers: { ...HEADERS_JSON, Prefer: 'return=minimal' }, body: JSON.stringify({ status: newStatus, updated_at: new Date().toISOString() }) });
+    if (!res.ok) throw new Error('status update failed');
+    if (newStatus === 'תקוע' && prevStatus !== 'תקוע') {
+      notifyIdentity(['national', 'president'], 'פרויקט תקוע', `${p.name} — ${p.institute_name || instituteName(p.institute_id)}`);
+    }
+  } catch (e) {
+    p.status = prevStatus;
+    render();
+    alert('עדכון הסטטוס נכשל — נסה/י שוב');
+  }
 }
 
 function taskListHtml() {
   const tasks = state.currentTasks.map((t) => `
     <div class="task-row">
       <input type="checkbox" ${t.status === 'הושלם' ? 'checked' : ''} onchange="toggleTaskDone('${esc(t.id)}', this.checked)">
+      ${t.assignee ? avatarHtml(t.assignee, 'sm') : ''}
       <div style="flex:1;">
         <div style="${t.status === 'הושלם' ? 'text-decoration:line-through;opacity:.55;' : ''}">${esc(t.title)}</div>
         <div class="muted">${t.assignee ? esc(t.assignee) : ''}${t.due_date ? (t.assignee ? ' · ' : '') + 'יעד: ' + esc(t.due_date) : ''}</div>
@@ -389,14 +545,30 @@ function documentsListHtml() {
   return rows || '<div class="muted">אין עדיין מסמכים מצורפים.</div>';
 }
 
+function teamChipsHtml() {
+  const team = (state.projectForm && state.projectForm.team) || [];
+  if (!team.length) return '<div class="muted">אין עדיין חברי צוות משויכים.</div>';
+  return `<div class="chip-row">${team.map((name) => `
+    <span class="chip">${avatarHtml(name, 'sm')} ${esc(name)} <button type="button" onclick="removeTeamMember('${esc(name)}')" aria-label="הסרה">✕</button></span>`).join('')}</div>`;
+}
+
+function employeeOptionsHtml(excludeNames) {
+  const excl = new Set(excludeNames || []);
+  return instituteEmployees(state.currentInstituteId).filter((n) => !excl.has(n)).map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('');
+}
+
 function projectDetailTemplate() {
   const f = state.projectForm;
   const statusOpts = STATUS_OPTIONS.map((s) => `<option value="${esc(s)}"${f.status === s ? ' selected' : ''}>${esc(s)}</option>`).join('');
   const priorityOpts = PRIORITY_OPTIONS.map((p) => `<option value="${esc(p)}"${f.priority === p ? ' selected' : ''}>${esc(p)}</option>`).join('');
   const categoryOpts = ['', ...CATEGORY_OPTIONS].map((c) => `<option value="${esc(c)}"${f.category === c ? ' selected' : ''}>${c ? esc(c) : 'ללא קטגוריה'}</option>`).join('');
   const overdue = !state.isNewProject && isOverdue({ target_date: f.target_date, status: f.status });
+  const employeeDatalist = `<datalist id="employeeDatalist">${instituteEmployees(state.currentInstituteId).map((n) => `<option value="${esc(n)}">`).join('')}</datalist>`;
+  const teamPickOpts = `<option value="">הוספת חבר/ת צוות…</option>${employeeOptionsHtml(f.team)}`;
   return `
+  <div class="wrap-narrow">
     <div class="breadcrumb"><a onclick="backToProjectList()">${esc(instituteName(state.currentInstituteId))}</a> / ${esc(f.name || 'פרויקט חדש')}</div>
+    ${employeeDatalist}
     <div class="card" style="display:flex;flex-direction:column;gap:var(--space-4);">
       <div class="grid grid-2">
         <div class="field"><label>שם הפרויקט</label><input class="input" value="${esc(f.name)}" oninput="state.projectForm.name=this.value"></div>
@@ -412,8 +584,15 @@ function projectDetailTemplate() {
         <div class="field"><label${overdue ? ' class="overdue"' : ''}>תאריך יעד${overdue ? ' — באיחור' : ''}</label><input class="input" type="date" value="${esc(f.target_date)}" oninput="state.projectForm.target_date=this.value"></div>
       </div>
       <div class="grid grid-2">
-        <div class="field"><label>אחראי (איש/מחלקה)</label><input class="input" value="${esc(f.owner)}" oninput="state.projectForm.owner=this.value"></div>
+        <div class="field"><label>אחראי ראשי</label><input class="input" list="employeeDatalist" value="${esc(f.owner)}" oninput="state.projectForm.owner=this.value" placeholder="שם איש קשר או מחלקה"></div>
         <div class="field"><label>תקציב מוקצה (₪)</label><input class="input" type="number" min="0" value="${esc(f.budget)}" oninput="state.projectForm.budget=this.value"></div>
+      </div>
+      <div class="field">
+        <label>צוות הפרויקט</label>
+        ${teamChipsHtml()}
+        <div class="add-chip-row" style="margin-top:6px;">
+          <select class="input" onchange="addTeamMember(this.value);this.value=''">${teamPickOpts}</select>
+        </div>
       </div>
       <div class="row">
         <button type="button" class="btn btn-primary" onclick="saveProject()" ${state.saving ? 'disabled' : ''}>${state.saving ? 'שומר…' : 'שמירה'}</button>
@@ -426,7 +605,7 @@ function projectDetailTemplate() {
       <div id="taskListContainer">${taskListHtml()}</div>
       <div class="grid" style="grid-template-columns:2fr 1fr 1fr auto;gap:8px;align-items:end;">
         <div class="field"><label>משימה חדשה</label><input class="input" id="taskTitleInput" value="${esc(state.taskDraft.title)}" oninput="state.taskDraft.title=this.value" onkeydown="if(event.key==='Enter')addTask()"></div>
-        <div class="field"><label>אחראי</label><input class="input" value="${esc(state.taskDraft.assignee)}" oninput="state.taskDraft.assignee=this.value"></div>
+        <div class="field"><label>אחראי</label><input class="input" list="employeeDatalist" value="${esc(state.taskDraft.assignee)}" oninput="state.taskDraft.assignee=this.value"></div>
         <div class="field"><label>יעד</label><input class="input" type="date" value="${esc(state.taskDraft.dueDate)}" oninput="state.taskDraft.dueDate=this.value"></div>
         <button type="button" class="btn" onclick="addTask()">הוספה</button>
       </div>
@@ -449,6 +628,7 @@ function projectDetailTemplate() {
         <div class="muted" style="margin-top:4px;">עד 3MB לקובץ.</div>
       </div>
     </div>` : '<div class="muted" style="margin-top:8px;">חלוקת משימות, עדכונים ומסמכים זמינים לאחר השמירה הראשונה.</div>'}
+  </div>
   `;
 }
 
@@ -492,6 +672,11 @@ async function fetchAppStateBasics() {
   const data = (rows && rows[0] && rows[0].data) || {};
   state.rolePasswords = data.rolePasswords || {};
   state.allInstitutes = Array.isArray(data.institutes) ? data.institutes.map((i) => ({ id: i.id, name: i.name })) : [];
+  const byInst = {};
+  (Array.isArray(data.institutes) ? data.institutes : []).forEach((i) => {
+    byInst[i.id] = Array.isArray(i.employees) ? i.employees.map((e) => e.name).filter(Boolean) : [];
+  });
+  state.employeesByInstitute = byInst;
 }
 
 async function fetchProjectCounts() {
@@ -526,7 +711,18 @@ function backToInstituteList() {
 function backToProjectList() { openInstituteProjects(state.currentInstituteId); }
 
 function blankProjectForm() {
-  return { name: '', description: '', status: 'מתוכנן', priority: 'בינונית', category: '', start_date: '', target_date: '', owner: '', budget: '' };
+  return { name: '', description: '', status: 'מתוכנן', priority: 'בינונית', category: '', start_date: '', target_date: '', owner: '', budget: '', team: [] };
+}
+
+function addTeamMember(name) {
+  if (!name || !state.projectForm) return;
+  if (!state.projectForm.team.includes(name)) state.projectForm.team = [...state.projectForm.team, name];
+  render();
+}
+function removeTeamMember(name) {
+  if (!state.projectForm) return;
+  state.projectForm.team = state.projectForm.team.filter((n) => n !== name);
+  render();
 }
 
 function startNewProject() {
@@ -550,6 +746,7 @@ async function openProjectDetail(id) {
     name: p.name || '', description: p.description || '', status: p.status || 'מתוכנן',
     priority: p.priority || 'בינונית', category: p.category || '',
     start_date: p.start_date || '', target_date: p.target_date || '', owner: p.owner || '', budget: p.budget || '',
+    team: Array.isArray(p.team) ? [...p.team] : [],
   };
   state.currentInstituteId = p.institute_id;
   state.view = 'projectDetail';
@@ -583,6 +780,7 @@ async function saveProject() {
     priority: f.priority || 'בינונית', category: f.category || null,
     start_date: f.start_date || null, target_date: f.target_date || null,
     owner: f.owner.trim(), budget: f.budget === '' ? null : Math.max(0, Number(f.budget) || 0),
+    team: f.team || [],
     updated_at: new Date().toISOString(),
   };
   state.saving = true; render();
@@ -775,7 +973,7 @@ function overviewTemplate() {
       <td>${esc(p.name)}${p.priority === 'גבוהה' ? ' 🔴' : ''}</td>
       <td>${esc(p.institute_name || '')}</td>
       <td><span class="tag ${STATUS_TAG_CLASS[p.status] || 'tag-planned'}">${esc(p.status)}</span></td>
-      <td>${esc(p.owner || '—')}</td>
+      <td>${avatarStackHtml((Array.isArray(p.team) && p.team.length) ? p.team : (p.owner ? [p.owner] : []), 'sm') || '—'}</td>
       <td class="${overdue ? 'overdue' : ''}">${p.target_date ? esc(p.target_date) : '—'}</td>
       <td>${p.budget ? fmtILS(p.budget) : '—'}</td>
       <td>${prog.total ? `${prog.done}/${prog.total}` : '—'}</td>
@@ -796,7 +994,7 @@ function overviewTemplate() {
     </div>
     <div class="card table-wrap">
       <table class="plain">
-        <thead><tr><th>פרויקט</th><th>מכון</th><th>סטטוס</th><th>אחראי</th><th>יעד</th><th>תקציב</th><th>משימות</th></tr></thead>
+        <thead><tr><th>פרויקט</th><th>מכון</th><th>סטטוס</th><th>צוות</th><th>יעד</th><th>תקציב</th><th>משימות</th></tr></thead>
         <tbody>${rows || '<tr><td colspan="7" class="muted">אין פרויקטים.</td></tr>'}</tbody>
       </table>
     </div>`;
