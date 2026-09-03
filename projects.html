@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="author" content="MEXUZ">
+<!-- © MEXUZ. All rights reserved. -->
+<title>ניהול פרויקטים - מכון פוירשטיין</title>
+<meta name="theme-color" content="#C2410C">
+<link rel="icon" href="icon-32.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --color-bg: #FFF8EF;
+    --color-surface: #FFFFFF;
+    --color-text: #2B2015;
+    --color-accent: #C2410C;
+    --color-accent-300: #C2410C;
+    --color-accent-500: #E0611E;
+    --color-accent-700: #B8480D;
+    --color-accent-800: #FBE4D0;
+    --color-accent-900: #FFF3E9;
+    --color-neutral-500: #A99783;
+    --color-neutral-700: #DED2C2;
+    --color-neutral-800: #F2EAD9;
+    --color-neutral-900: #FFFFFF;
+    --radius-sm: 4px;
+    --radius-md: 8px;
+    --radius-lg: 14px;
+    --space-2: 5.6px;
+    --space-3: 8.4px;
+    --space-4: 11.2px;
+    --space-6: 16.8px;
+    --shadow-md: 0 1px 2px rgba(43,32,21,.06), 0 8px 20px rgba(43,32,21,.12);
+    --shadow-lg: 0 2px 6px rgba(43,32,21,.08), 0 18px 44px rgba(43,32,21,.16);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--color-bg); color: var(--color-text); font-family: 'Heebo', system-ui, sans-serif; }
+  a { color: inherit; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: var(--space-6) var(--space-4) 60px; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; padding: var(--space-4) var(--space-6); background: var(--color-surface); border-bottom: 1px solid var(--color-neutral-700); position: sticky; top: 0; z-index: 5; }
+  .brand { font-weight: 700; font-size: 17px; }
+  .brand-sub { font-size: 12px; opacity: .6; margin-top: 2px; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; border-radius: var(--radius-sm); border: 1px solid var(--color-neutral-700); background: var(--color-surface); color: var(--color-text); font-family: inherit; font-size: 14px; cursor: pointer; text-decoration: none; }
+  .btn:hover { background: var(--color-neutral-800); }
+  .btn-primary { background: var(--color-accent); border-color: var(--color-accent); color: #fff; }
+  .btn-primary:hover { background: var(--color-accent-700); }
+  .btn-ghost { border: none; background: none; }
+  .btn-danger { color: var(--color-accent-700); border-color: var(--color-accent-700); }
+  .btn-sm { padding: 4px 10px; font-size: 12px; }
+  .card { background: var(--color-surface); border: 1px solid var(--color-neutral-700); border-radius: var(--radius-md); box-shadow: var(--shadow-md); padding: var(--space-4); }
+  .card-clickable { cursor: pointer; transition: box-shadow .12s ease; }
+  .card-clickable:hover { box-shadow: var(--shadow-lg); }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 12px; opacity: .7; }
+  .input, select.input, textarea.input { padding: 9px 12px; border-radius: var(--radius-sm); border: 1px solid var(--color-neutral-700); font-family: inherit; font-size: 14px; background: var(--color-surface); color: var(--color-text); width: 100%; }
+  textarea.input { resize: vertical; min-height: 70px; }
+  .grid { display: grid; gap: var(--space-4); }
+  .grid-2 { grid-template-columns: 1fr 1fr; }
+  @media (max-width: 640px) { .grid-2 { grid-template-columns: 1fr; } }
+  .tag { display: inline-block; padding: 3px 10px; border-radius: 99px; font-size: 12px; font-weight: 500; }
+  .tag-planned { background: var(--color-neutral-800); color: var(--color-text); }
+  .tag-progress { background: var(--color-accent-900); color: var(--color-accent-700); }
+  .tag-done { background: #E3F3E9; color: #256B41; }
+  .tag-stuck { background: var(--color-accent-800); color: var(--color-accent-700); }
+  .breadcrumb { font-size: 13px; opacity: .65; margin-bottom: var(--space-3); }
+  .breadcrumb a { text-decoration: underline; cursor: pointer; }
+  h1 { font-size: 22px; margin: 0 0 var(--space-2); }
+  h2 { font-size: 17px; margin: 0; }
+  .muted { opacity: .6; font-size: 13px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
+  .task-row { display: flex; align-items: center; gap: var(--space-3); padding: 8px 0; border-bottom: 1px solid var(--color-neutral-800); }
+  .task-row:last-child { border-bottom: none; }
+  .error-box { background: var(--color-accent-900); color: var(--color-accent-700); border: 1px solid var(--color-accent-800); border-radius: var(--radius-sm); padding: 10px 14px; font-size: 13px; }
+  .loading-box { text-align: center; padding: 60px 0; opacity: .6; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+'use strict';
+const SUPABASE_URL = 'https://tnfjcmmblrkhypprjacq.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRuZmpjbW1ibHJraHlwcHJqYWNxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc2NTE5ODMsImV4cCI6MjEwMzIyNzk4M30.SWp32bN-Pm-X4qDX8QbGQED5DYJBZQBg28C4vJ17gns';
+const SUPABASE_STATE_URL = SUPABASE_URL + '/rest/v1/app_state';
+const PROJECTS_URL = SUPABASE_URL + '/rest/v1/projects';
+const TASKS_URL = SUPABASE_URL + '/rest/v1/project_tasks';
+const HEADERS_JSON = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY, 'Content-Type': 'application/json' };
+const HEADERS_GET = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
+
+const STATUS_OPTIONS = ['מתוכנן', 'בביצוע', 'הושלם', 'תקוע'];
+const STATUS_TAG_CLASS = { 'מתוכנן': 'tag-planned', 'בביצוע': 'tag-progress', 'הושלם': 'tag-done', 'תקוע': 'tag-stuck' };
+const TASK_STATUS_OPTIONS = ['ממתין', 'בביצוע', 'הושלם'];
+const ROLE_LABELS = { national: 'מנהל תפעול ארצי', president: 'נשיא', instituteManager: 'מנהל/ת מכון' };
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function fmtILS(n) { const v = Math.round(Number(n) || 0); return v.toLocaleString('he-IL') + ' ₪'; }
+function roleKey(role, instituteId) { return role === 'instituteManager' ? 'institute_' + instituteId : role; }
+function uid(prefix) { return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+
+const SESSION_KEY = 'fp_projects_session_v1';
+let state = {
+  screen: 'loading', // loading | login | app
+  role: sessionStorage.getItem(SESSION_KEY + '_role') || '',
+  myInstituteId: sessionStorage.getItem(SESSION_KEY + '_inst') || '',
+  loginRolePick: 'instituteManager',
+  loginInstitutePick: '',
+  loginPassword: '',
+  loginError: '',
+  allInstitutes: [], // [{id, name}]
+  rolePasswords: null,
+  view: 'instituteList', // instituteList | projectList | projectDetail
+  currentInstituteId: null,
+  projects: [],
+  projectCounts: {},
+  currentProject: null,
+  isNewProject: false,
+  projectForm: null,
+  currentTasks: [],
+  taskDraft: { title: '', assignee: '', dueDate: '' },
+  busy: false,
+  fatalError: '',
+};
+
+function render() {
+  const root = document.getElementById('root');
+  if (state.screen === 'loading') { root.innerHTML = '<div class="loading-box">טוען…</div>'; return; }
+  if (state.fatalError) { root.innerHTML = '<div class="wrap"><div class="error-box">' + esc(state.fatalError) + '</div></div>'; return; }
+  if (state.screen === 'login') { root.innerHTML = loginTemplate(); return; }
+  root.innerHTML = topbarTemplate() + '<div class="wrap">' + appBodyTemplate() + '</div>';
+}
+
+function loginTemplate() {
+  const instOptions = state.allInstitutes.map((i) => `<option value="${esc(i.id)}"${state.loginInstitutePick === i.id ? ' selected' : ''}>${esc(i.name)}</option>`).join('');
+  return `
+  <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px;">
+    <div class="card" style="max-width:380px;width:100%;display:flex;flex-direction:column;gap:14px;">
+      <div>
+        <div style="font-weight:700;font-size:18px;">ניהול פרויקטים</div>
+        <div class="muted">מכון פוירשטיין — גישה למנהל תפעול ארצי, נשיא ומנהלי מכונים בלבד</div>
+      </div>
+      <div class="field"><label>תפקיד</label>
+        <select class="input" id="loginRole" onchange="onLoginRoleChange(this.value)">
+          <option value="instituteManager"${state.loginRolePick === 'instituteManager' ? ' selected' : ''}>מנהל/ת מכון</option>
+          <option value="national"${state.loginRolePick === 'national' ? ' selected' : ''}>מנהל תפעול ארצי</option>
+          <option value="president"${state.loginRolePick === 'president' ? ' selected' : ''}>נשיא</option>
+        </select>
+      </div>
+      ${state.loginRolePick === 'instituteManager' ? `
+      <div class="field"><label>מכון</label>
+        <select class="input" id="loginInstitute" onchange="state.loginInstitutePick=this.value">
+          <option value="">בחר/י מכון</option>
+          ${instOptions}
+        </select>
+      </div>` : ''}
+      <div class="field"><label>סיסמה</label>
+        <input class="input" type="password" id="loginPassword" value="${esc(state.loginPassword)}" onkeydown="if(event.key==='Enter')submitLogin()">
+      </div>
+      ${state.loginError ? `<div class="error-box">${esc(state.loginError)}</div>` : ''}
+      <button type="button" class="btn btn-primary" onclick="submitLogin()">כניסה</button>
+      <a class="muted" style="text-align:center;" href="index.html">חזרה למערכת הראשית</a>
+    </div>
+  </div>`;
+}
+
+function topbarTemplate() {
+  return `
+  <div class="topbar">
+    <div>
+      <div class="brand">📁 ניהול פרויקטים</div>
+      <div class="brand-sub">${esc(ROLE_LABELS[state.role] || '')}${state.role === 'instituteManager' ? ' · ' + esc(instituteName(state.myInstituteId)) : ''}</div>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <a class="btn btn-sm" href="index.html">🏠 למערכת הראשית</a>
+      <button type="button" class="btn btn-sm" onclick="logout()">יציאה</button>
+    </div>
+  </div>`;
+}
+
+function instituteName(id) { const i = state.allInstitutes.find((x) => x.id === id); return i ? i.name : ''; }
+
+function appBodyTemplate() {
+  if (state.view === 'instituteList') return instituteListTemplate();
+  if (state.view === 'projectList') return projectListTemplate();
+  if (state.view === 'projectDetail') return projectDetailTemplate();
+  return '';
+}
+
+function instituteListTemplate() {
+  const cards = state.allInstitutes.map((i) => `
+    <div class="card card-clickable" onclick="openInstituteProjects('${esc(i.id)}')">
+      <div class="row">
+        <div>
+          <div style="font-weight:600;">${esc(i.name)}</div>
+          <div class="muted">${state.projectCounts[i.id] || 0} פרויקטים</div>
+        </div>
+        <div style="font-size:20px;">←</div>
+      </div>
+    </div>`).join('');
+  return `<h1>בחר/י מכון</h1><div class="grid" style="grid-template-columns:1fr;">${cards || '<div class="muted">אין מכונים</div>'}</div>`;
+}
+
+function projectListTemplate() {
+  const rows = state.projects.map((p) => `
+    <div class="card card-clickable" onclick="openProjectDetail('${esc(p.id)}')">
+      <div class="row">
+        <div style="display:flex;flex-direction:column;gap:4px;">
+          <div style="font-weight:600;">${esc(p.name)}</div>
+          <div class="muted">${p.owner ? '👤 ' + esc(p.owner) : ''}${p.target_date ? ' · יעד: ' + esc(p.target_date) : ''}${p.budget ? ' · ' + fmtILS(p.budget) : ''}</div>
+        </div>
+        <span class="tag ${STATUS_TAG_CLASS[p.status] || 'tag-planned'}">${esc(p.status)}</span>
+      </div>
+    </div>`).join('');
+  return `
+    <div class="breadcrumb">${state.role === 'instituteManager' ? '' : `<a onclick="backToInstituteList()">כל המכונים</a> / `}${esc(instituteName(state.currentInstituteId))}</div>
+    <div class="row" style="margin-bottom:var(--space-4);">
+      <h1 style="margin:0;">פרויקטים — ${esc(instituteName(state.currentInstituteId))}</h1>
+      <button type="button" class="btn btn-primary" onclick="startNewProject()">+ פרויקט חדש</button>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr;">${rows || '<div class="muted">אין פרויקטים עדיין במכון זה.</div>'}</div>`;
+}
+
+function projectDetailTemplate() {
+  const f = state.projectForm;
+  const statusOpts = STATUS_OPTIONS.map((s) => `<option value="${esc(s)}"${f.status === s ? ' selected' : ''}>${esc(s)}</option>`).join('');
+  const tasks = state.currentTasks.map((t) => `
+    <div class="task-row">
+      <input type="checkbox" ${t.status === 'הושלם' ? 'checked' : ''} onchange="toggleTaskDone('${esc(t.id)}', this.checked)">
+      <div style="flex:1;">
+        <div style="${t.status === 'הושלם' ? 'text-decoration:line-through;opacity:.55;' : ''}">${esc(t.title)}</div>
+        <div class="muted">${t.assignee ? esc(t.assignee) : ''}${t.due_date ? (t.assignee ? ' · ' : '') + 'יעד: ' + esc(t.due_date) : ''}</div>
+      </div>
+      <select class="input" style="width:auto;padding:4px 8px;font-size:12px;" onchange="setTaskStatus('${esc(t.id)}', this.value)">
+        ${TASK_STATUS_OPTIONS.map((s) => `<option value="${esc(s)}"${t.status === s ? ' selected' : ''}>${esc(s)}</option>`).join('')}
+      </select>
+      <button type="button" class="btn btn-ghost btn-sm" onclick="removeTask('${esc(t.id)}')" aria-label="הסרה">✕</button>
+    </div>`).join('');
+  return `
+    <div class="breadcrumb"><a onclick="backToProjectList()">${esc(instituteName(state.currentInstituteId))}</a> / ${esc(f.name || 'פרויקט חדש')}</div>
+    <div class="card" style="display:flex;flex-direction:column;gap:var(--space-4);">
+      <div class="grid grid-2">
+        <div class="field"><label>שם הפרויקט</label><input class="input" value="${esc(f.name)}" oninput="state.projectForm.name=this.value"></div>
+        <div class="field"><label>סטטוס</label><select class="input" onchange="state.projectForm.status=this.value">${statusOpts}</select></div>
+      </div>
+      <div class="field"><label>תיאור</label><textarea class="input" oninput="state.projectForm.description=this.value">${esc(f.description)}</textarea></div>
+      <div class="grid grid-2">
+        <div class="field"><label>תאריך התחלה</label><input class="input" type="date" value="${esc(f.start_date)}" oninput="state.projectForm.start_date=this.value"></div>
+        <div class="field"><label>תאריך יעד</label><input class="input" type="date" value="${esc(f.target_date)}" oninput="state.projectForm.target_date=this.value"></div>
+      </div>
+      <div class="grid grid-2">
+        <div class="field"><label>אחראי (איש/מחלקה)</label><input class="input" value="${esc(f.owner)}" oninput="state.projectForm.owner=this.value"></div>
+        <div class="field"><label>תקציב מוקצה (₪)</label><input class="input" type="number" min="0" value="${esc(f.budget)}" oninput="state.projectForm.budget=this.value"></div>
+      </div>
+      <div class="row">
+        <button type="button" class="btn btn-primary" onclick="saveProject()">שמירה</button>
+        ${!state.isNewProject ? `<button type="button" class="btn btn-danger" onclick="deleteProject()">מחיקת פרויקט</button>` : ''}
+      </div>
+    </div>
+    ${!state.isNewProject ? `
+    <div class="card" style="margin-top:var(--space-4);display:flex;flex-direction:column;gap:var(--space-3);">
+      <h2>חלוקת משימות</h2>
+      <div>${tasks || '<div class="muted">אין עדיין משימות בפרויקט.</div>'}</div>
+      <div class="grid" style="grid-template-columns:2fr 1fr 1fr auto;gap:8px;align-items:end;">
+        <div class="field"><label>משימה חדשה</label><input class="input" id="taskTitleInput" value="${esc(state.taskDraft.title)}" oninput="state.taskDraft.title=this.value" onkeydown="if(event.key==='Enter')addTask()"></div>
+        <div class="field"><label>אחראי</label><input class="input" value="${esc(state.taskDraft.assignee)}" oninput="state.taskDraft.assignee=this.value"></div>
+        <div class="field"><label>יעד</label><input class="input" type="date" value="${esc(state.taskDraft.dueDate)}" oninput="state.taskDraft.dueDate=this.value"></div>
+        <button type="button" class="btn" onclick="addTask()">הוספה</button>
+      </div>
+    </div>` : '<div class="muted" style="margin-top:8px;">חלוקת משימות זמינה לאחר השמירה הראשונה.</div>'}
+  `;
+}
+
+function onLoginRoleChange(val) { state.loginRolePick = val; render(); }
+
+async function submitLogin() {
+  const passInput = document.getElementById('loginPassword');
+  state.loginPassword = passInput ? passInput.value : state.loginPassword;
+  const role = state.loginRolePick;
+  const instituteId = state.loginInstitutePick;
+  if (role === 'instituteManager' && !instituteId) { state.loginError = 'יש לבחור מכון'; render(); return; }
+  const expected = state.rolePasswords ? state.rolePasswords[roleKey(role, instituteId)] : null;
+  if (!expected || (state.loginPassword || '').trim() !== String(expected).trim()) {
+    state.loginError = 'סיסמה שגויה';
+    render();
+    return;
+  }
+  state.role = role;
+  state.myInstituteId = role === 'instituteManager' ? instituteId : '';
+  sessionStorage.setItem(SESSION_KEY + '_role', state.role);
+  sessionStorage.setItem(SESSION_KEY + '_inst', state.myInstituteId);
+  state.loginError = '';
+  state.loginPassword = '';
+  await enterApp();
+}
+
+function logout() {
+  sessionStorage.removeItem(SESSION_KEY + '_role');
+  sessionStorage.removeItem(SESSION_KEY + '_inst');
+  state.role = '';
+  state.myInstituteId = '';
+  state.screen = 'login';
+  render();
+}
+
+async function fetchAppStateBasics() {
+  const res = await fetch(SUPABASE_STATE_URL + '?id=eq.1&select=data', { headers: HEADERS_GET });
+  if (!res.ok) throw new Error('state fetch failed');
+  const rows = await res.json();
+  const data = (rows && rows[0] && rows[0].data) || {};
+  state.rolePasswords = data.rolePasswords || {};
+  state.allInstitutes = Array.isArray(data.institutes) ? data.institutes.map((i) => ({ id: i.id, name: i.name })) : [];
+}
+
+async function fetchProjectCounts() {
+  try {
+    const res = await fetch(PROJECTS_URL + '?select=institute_id', { headers: HEADERS_GET });
+    if (!res.ok) return;
+    const rows = await res.json();
+    const counts = {};
+    rows.forEach((r) => { counts[r.institute_id] = (counts[r.institute_id] || 0) + 1; });
+    state.projectCounts = counts;
+  } catch (e) { /* non-fatal — counts just stay at 0 */ }
+}
+
+async function openInstituteProjects(instituteId) {
+  if (state.role === 'instituteManager' && instituteId !== state.myInstituteId) return;
+  state.currentInstituteId = instituteId;
+  state.busy = true; render();
+  try {
+    const res = await fetch(PROJECTS_URL + '?institute_id=eq.' + encodeURIComponent(instituteId) + '&order=created_at.desc', { headers: HEADERS_GET });
+    state.projects = res.ok ? await res.json() : [];
+  } catch (e) { state.projects = []; }
+  state.busy = false;
+  state.view = 'projectList';
+  render();
+}
+
+function backToInstituteList() {
+  state.view = 'instituteList';
+  fetchProjectCounts().then(render);
+  render();
+}
+function backToProjectList() { openInstituteProjects(state.currentInstituteId); }
+
+function blankProjectForm() {
+  return { name: '', description: '', status: 'מתוכנן', start_date: '', target_date: '', owner: '', budget: '' };
+}
+
+function startNewProject() {
+  state.isNewProject = true;
+  state.currentProject = null;
+  state.projectForm = blankProjectForm();
+  state.currentTasks = [];
+  state.view = 'projectDetail';
+  render();
+}
+
+async function openProjectDetail(id) {
+  const p = state.projects.find((x) => x.id === id);
+  if (!p) return;
+  state.isNewProject = false;
+  state.currentProject = p;
+  state.projectForm = {
+    name: p.name || '', description: p.description || '', status: p.status || 'מתוכנן',
+    start_date: p.start_date || '', target_date: p.target_date || '', owner: p.owner || '', budget: p.budget || '',
+  };
+  state.view = 'projectDetail';
+  render();
+  try {
+    const res = await fetch(TASKS_URL + '?project_id=eq.' + encodeURIComponent(id) + '&order=created_at.asc', { headers: HEADERS_GET });
+    state.currentTasks = res.ok ? await res.json() : [];
+  } catch (e) { state.currentTasks = []; }
+  render();
+}
+
+async function saveProject() {
+  const f = state.projectForm;
+  if (!f.name.trim()) { alert('יש להזין שם לפרויקט'); return; }
+  const payload = {
+    institute_id: state.currentInstituteId,
+    institute_name: instituteName(state.currentInstituteId),
+    name: f.name.trim(), description: f.description.trim(), status: f.status,
+    start_date: f.start_date || null, target_date: f.target_date || null,
+    owner: f.owner.trim(), budget: f.budget === '' ? null : Math.max(0, Number(f.budget) || 0),
+    updated_at: new Date().toISOString(),
+  };
+  try {
+    if (state.isNewProject) {
+      payload.id = uid('proj_');
+      payload.created_at = new Date().toISOString();
+      const res = await fetch(PROJECTS_URL, { method: 'POST', headers: { ...HEADERS_JSON, Prefer: 'return=minimal' }, body: JSON.stringify(payload) });
+      if (!res.ok) throw new Error('create failed');
+    } else {
+      const res = await fetch(PROJECTS_URL + '?id=eq.' + encodeURIComponent(state.currentProject.id), { method: 'PATCH', headers: { ...HEADERS_JSON, Prefer: 'return=minimal' }, body: JSON.stringify(payload) });
+      if (!res.ok) throw new Error('update failed');
+    }
+  } catch (e) { alert('שמירה נכשלה — בדוק/י חיבור לאינטרנט ונסה/י שוב'); return; }
+  await openInstituteProjects(state.currentInstituteId);
+}
+
+async function deleteProject() {
+  if (!state.currentProject) return;
+  if (!confirm('למחוק את הפרויקט "' + state.currentProject.name + '"? הפעולה בלתי הפיכה, כולל כל המשימות שבו.')) return;
+  try {
+    await fetch(TASKS_URL + '?project_id=eq.' + encodeURIComponent(state.currentProject.id), { method: 'DELETE', headers: HEADERS_JSON });
+    await fetch(PROJECTS_URL + '?id=eq.' + encodeURIComponent(state.currentProject.id), { method: 'DELETE', headers: HEADERS_JSON });
+  } catch (e) { alert('המחיקה נכשלה — נסה/י שוב'); return; }
+  await openInstituteProjects(state.currentInstituteId);
+}
+
+async function addTask() {
+  const title = (state.taskDraft.title || '').trim();
+  if (!title || !state.currentProject) return;
+  const row = { id: uid('task_'), project_id: state.currentProject.id, title, assignee: (state.taskDraft.assignee || '').trim(), due_date: state.taskDraft.dueDate || null, status: 'ממתין', created_at: new Date().toISOString() };
+  try {
+    const res = await fetch(TASKS_URL, { method: 'POST', headers: { ...HEADERS_JSON, Prefer: 'return=minimal' }, body: JSON.stringify(row) });
+    if (!res.ok) throw new Error('add task failed');
+  } catch (e) { alert('הוספת המשימה נכשלה'); return; }
+  state.taskDraft = { title: '', assignee: '', dueDate: '' };
+  await openProjectDetail(state.currentProject.id);
+}
+
+async function setTaskStatus(taskId, status) {
+  try { await fetch(TASKS_URL + '?id=eq.' + encodeURIComponent(taskId), { method: 'PATCH', headers: { ...HEADERS_JSON, Prefer: 'return=minimal' }, body: JSON.stringify({ status }) }); } catch (e) {}
+  const t = state.currentTasks.find((x) => x.id === taskId);
+  if (t) t.status = status;
+  render();
+}
+function toggleTaskDone(taskId, checked) { setTaskStatus(taskId, checked ? 'הושלם' : 'ממתין'); }
+
+async function removeTask(taskId) {
+  try { await fetch(TASKS_URL + '?id=eq.' + encodeURIComponent(taskId), { method: 'DELETE', headers: HEADERS_JSON }); } catch (e) {}
+  state.currentTasks = state.currentTasks.filter((t) => t.id !== taskId);
+  render();
+}
+
+async function enterApp() {
+  state.screen = 'app';
+  if (state.role === 'instituteManager') {
+    await openInstituteProjects(state.myInstituteId);
+  } else {
+    await fetchProjectCounts();
+    state.view = 'instituteList';
+    render();
+  }
+}
+
+async function init() {
+  try {
+    await fetchAppStateBasics();
+  } catch (e) {
+    state.fatalError = 'לא ניתן להתחבר לשרת כרגע. בדוק/י חיבור לאינטרנט ורענן/י את הדף.';
+    state.screen = 'app';
+    render();
+    return;
+  }
+  if (state.role && (state.role !== 'instituteManager' || state.myInstituteId)) {
+    // reuse the session only if the expected password key still resolves (institute wasn't deleted meanwhile)
+    const key = roleKey(state.role, state.myInstituteId);
+    if (state.rolePasswords && key in state.rolePasswords) {
+      await enterApp();
+      return;
+    }
+  }
+  state.screen = 'login';
+  render();
+}
+
+init();
+</script>
+</body>
+</html>
