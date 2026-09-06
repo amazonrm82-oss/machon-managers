@@ -10,6 +10,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   :root {
     --color-bg: #FFF8EF;
@@ -202,6 +203,27 @@ function taskProgress(p) {
   const done = tasks.filter((t) => t.status === 'הושלם').length;
   return { done, total: tasks.length };
 }
+function expensesTotal(p) {
+  const list = Array.isArray(p.expenses) ? p.expenses : [];
+  return list.reduce((a, e) => a + (Number(e.amount) || 0), 0);
+}
+
+function exportProjectsToExcel(list, scopeLabel) {
+  if (typeof XLSX === 'undefined') { alert('רכיב הייצוא לא נטען — יש לבדוק חיבור לאינטרנט ולנסות שוב'); return; }
+  if (!list.length) { alert('אין פרויקטים לייצוא'); return; }
+  const header = ['שם הפרויקט', 'מכון', 'סטטוס', 'עדיפות', 'קטגוריה', 'אחראי', 'תאריך התחלה', 'תאריך יעד', 'תקציב מוקצה', 'נוצל בפועל', 'אחוז ניצול', 'צוות', 'משימות שהושלמו', 'סה"כ משימות'];
+  const rows = list.map((p) => {
+    const prog = taskProgress(p);
+    const spent = expensesTotal(p);
+    const pct = p.budget ? Math.round((spent / p.budget) * 100) : '';
+    const team = Array.isArray(p.team) ? p.team.join(', ') : '';
+    return [p.name || '', p.institute_name || scopeLabel || '', p.status || '', p.priority || '', p.category || '', p.owner || '', p.start_date || '', p.target_date || '', p.budget || '', spent || '', pct, team, prog.done, prog.total];
+  });
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
+  XLSX.utils.book_append_sheet(wb, ws, 'פרויקטים');
+  XLSX.writeFile(wb, `פרויקטים - ${scopeLabel || 'רשימה'}.xlsx`);
+}
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -258,6 +280,7 @@ let state = {
   dragProjectId: null,
   expandedChecklists: {}, // taskId -> bool
   checklistDraft: {}, // taskId -> draft text
+  expenseDraft: { desc: '', amount: '' },
   myName: sessionStorage.getItem(SESSION_KEY + '_myname') || '',
   myNamePick: '',
   myTasks: [],
@@ -415,7 +438,12 @@ function visibleProjects() {
 function projectCardMetaHtml(p) {
   const overdue = isOverdue(p);
   const team = Array.isArray(p.team) ? p.team : [];
-  return `${p.category ? esc(p.category) + ' · ' : ''}${p.target_date ? '<span class="' + (overdue ? 'overdue' : '') + '">יעד: ' + esc(p.target_date) + (overdue ? ' (באיחור)' : '') + '</span>' : ''}${p.budget ? ' · ' + fmtILS(p.budget) : ''}`;
+  const spent = expensesTotal(p);
+  const overBudget = p.budget && spent > p.budget;
+  const budgetPart = p.budget
+    ? ' · <span' + (overBudget ? ' class="overdue"' : '') + '>נוצל ' + fmtILS(spent) + ' מתוך ' + fmtILS(p.budget) + (overBudget ? ' (חריגה)' : '') + '</span>'
+    : (spent ? ' · הוצאות: ' + fmtILS(spent) : '');
+  return `${p.category ? esc(p.category) + ' · ' : ''}${p.target_date ? '<span class="' + (overdue ? 'overdue' : '') + '">יעד: ' + esc(p.target_date) + (overdue ? ' (באיחור)' : '') + '</span>' : ''}${budgetPart}`;
 }
 
 function projectListTemplate() {
@@ -432,6 +460,7 @@ function projectListTemplate() {
           <button type="button" class="${state.projectListViewMode === 'list' ? 'active' : ''}" onclick="state.projectListViewMode='list';render()">📋 רשימה</button>
           <button type="button" class="${state.projectListViewMode === 'timeline' ? 'active' : ''}" onclick="state.projectListViewMode='timeline';render()">🗓️ ציר זמן</button>
         </div>
+        <button type="button" class="btn btn-secondary" onclick="exportProjectsToExcel(visibleProjects(), instituteName(state.currentInstituteId))">⬇️ ייצוא לאקסל</button>
         <button type="button" class="btn btn-primary" onclick="startNewProject()">+ פרויקט חדש</button>
       </div>
     </div>
@@ -664,6 +693,32 @@ function updatesListHtml() {
   return rows || '<div class="muted">אין עדיין עדכונים.</div>';
 }
 
+function expensesSummaryHtml(f) {
+  const spent = expensesTotal(f);
+  if (!f.budget) return `<div class="muted">לא הוגדר תקציב מוקצה לפרויקט — ניתן עדיין לתעד הוצאות בפועל.${spent ? ' סה"כ עד כה: ' + fmtILS(spent) : ''}</div>`;
+  const pct = Math.round((spent / f.budget) * 100);
+  const pctClamped = Math.min(pct, 100);
+  const over = spent > f.budget;
+  return `
+    <div style="display:flex;align-items:center;gap:var(--space-2);">
+      <div style="flex:1;height:8px;border-radius:99px;background:var(--color-neutral-700, #e5e0d4);overflow:hidden;">
+        <div style="height:100%;width:${pctClamped}%;background:${over ? '#B8480D' : 'var(--color-accent, #C2410C)'};"></div>
+      </div>
+      <span class="tag ${over ? 'tag-accent' : ''}">${pct}%</span>
+    </div>
+    <div class="muted">נוצל ${fmtILS(spent)} מתוך ${fmtILS(f.budget)}${over ? ' — חריגה מהתקציב!' : ''}</div>
+  `;
+}
+
+function expensesListHtml(f) {
+  const rows = (f.expenses || []).map((e) => `
+    <div class="update-row">
+      <div>${esc(e.desc)} <b>${fmtILS(e.amount)}</b></div>
+      <div class="update-meta">${esc(e.date || '')} <button type="button" class="btn btn-ghost btn-sm" onclick="removeExpense('${esc(e.id)}')" aria-label="הסרה">✕</button></div>
+    </div>`).join('');
+  return rows || '<div class="muted">אין עדיין הוצאות מתועדות.</div>';
+}
+
 function documentsListHtml() {
   const rows = state.currentDocuments.map((d) => `
     <div class="doc-row">
@@ -739,6 +794,16 @@ function projectDetailTemplate() {
         <div class="field"><label>אחראי</label><input class="input" id="taskAssigneeInput" list="employeeDatalist" value="${esc(state.taskDraft.assignee)}" oninput="state.taskDraft.assignee=this.value"></div>
         <div class="field"><label>יעד</label><input class="input" type="date" value="${esc(state.taskDraft.dueDate)}" oninput="state.taskDraft.dueDate=this.value"></div>
         <button type="button" class="btn" onclick="addTask()">הוספה</button>
+      </div>
+    </div>
+    <div class="card" style="margin-top:var(--space-4);display:flex;flex-direction:column;gap:var(--space-3);">
+      <h2>הוצאות בפועל</h2>
+      ${expensesSummaryHtml(f)}
+      <div id="expensesListContainer">${expensesListHtml(f)}</div>
+      <div class="grid" style="grid-template-columns:2fr 1fr auto;gap:8px;align-items:end;">
+        <div class="field"><label>תיאור ההוצאה</label><input class="input" id="expenseDescInput" value="${esc(state.expenseDraft.desc)}" oninput="state.expenseDraft.desc=this.value" onkeydown="if(event.key==='Enter')addExpense()"></div>
+        <div class="field"><label>סכום (₪)</label><input class="input" type="number" min="0" id="expenseAmountInput" value="${esc(state.expenseDraft.amount)}" oninput="state.expenseDraft.amount=this.value" onkeydown="if(event.key==='Enter')addExpense()"></div>
+        <button type="button" class="btn" onclick="addExpense()">הוספה</button>
       </div>
     </div>
     <div class="card" style="margin-top:var(--space-4);display:flex;flex-direction:column;gap:var(--space-3);">
@@ -842,7 +907,7 @@ function backToInstituteList() {
 function backToProjectList() { openInstituteProjects(state.currentInstituteId); }
 
 function blankProjectForm() {
-  return { name: '', description: '', status: 'מתוכנן', priority: 'בינונית', category: '', start_date: '', target_date: '', owner: '', budget: '', team: [] };
+  return { name: '', description: '', status: 'מתוכנן', priority: 'בינונית', category: '', start_date: '', target_date: '', owner: '', budget: '', team: [], expenses: [] };
 }
 
 function addTeamMember(name) {
@@ -856,6 +921,23 @@ function removeTeamMember(name) {
   render();
 }
 
+function addExpense() {
+  const f = state.projectForm;
+  if (!f) return;
+  const desc = (state.expenseDraft && state.expenseDraft.desc || '').trim();
+  const amount = Math.max(0, Number(state.expenseDraft && state.expenseDraft.amount) || 0);
+  if (!desc || !amount) { alert('יש להזין תיאור וסכום להוצאה'); return; }
+  f.expenses = [...(f.expenses || []), { id: uid('exp_'), desc, amount, date: todayStr() }];
+  state.expenseDraft = { desc: '', amount: '' };
+  render();
+}
+function removeExpense(id) {
+  const f = state.projectForm;
+  if (!f) return;
+  f.expenses = (f.expenses || []).filter((e) => e.id !== id);
+  render();
+}
+
 function startNewProject() {
   state.isNewProject = true;
   state.currentProject = null;
@@ -864,6 +946,7 @@ function startNewProject() {
   state.currentUpdates = [];
   state.currentDocuments = [];
   state.docUploadError = '';
+  state.expenseDraft = { desc: '', amount: '' };
   state.view = 'projectDetail';
   render();
 }
@@ -878,10 +961,12 @@ async function openProjectDetail(id) {
     priority: p.priority || 'בינונית', category: p.category || '',
     start_date: p.start_date || '', target_date: p.target_date || '', owner: p.owner || '', budget: p.budget || '',
     team: Array.isArray(p.team) ? [...p.team] : [],
+    expenses: Array.isArray(p.expenses) ? [...p.expenses] : [],
   };
   state.currentInstituteId = p.institute_id;
   state.view = 'projectDetail';
   state.docUploadError = '';
+  state.expenseDraft = { desc: '', amount: '' };
   render();
   try {
     const [tasksRes, updatesRes, docsRes] = await Promise.all([
@@ -912,6 +997,7 @@ async function saveProject() {
     start_date: f.start_date || null, target_date: f.target_date || null,
     owner: f.owner.trim(), budget: f.budget === '' ? null : Math.max(0, Number(f.budget) || 0),
     team: f.team || [],
+    expenses: f.expenses || [],
     updated_at: new Date().toISOString(),
   };
   state.saving = true; render();
@@ -941,6 +1027,15 @@ async function saveProject() {
     }
   } else if (payload.status === 'תקוע' && prevStatus !== 'תקוע') {
     notifyIdentity(['national', 'president'], 'פרויקט תקוע', `${payload.name} — ${payload.institute_name}`);
+  }
+  if (!wasNew && payload.budget) {
+    const prevSpent = state.currentProject ? expensesTotal(state.currentProject) : 0;
+    const prevBudget = state.currentProject ? (state.currentProject.budget || 0) : 0;
+    const newSpent = expensesTotal(payload);
+    const wasOverBefore = prevBudget > 0 && prevSpent > prevBudget;
+    if (newSpent > payload.budget && !wasOverBefore) {
+      notifyIdentity(['national', 'president', 'instituteManager::' + payload.institute_id], 'חריגה מתקציב פרויקט', `${payload.name} — נוצל ${fmtILS(newSpent)} מתוך ${fmtILS(payload.budget)}`);
+    }
   }
   await openInstituteProjects(state.currentInstituteId);
 }
@@ -1125,10 +1220,12 @@ function overviewTemplate() {
   const byStatus = {};
   STATUS_OPTIONS.forEach((s) => { byStatus[s] = 0; });
   let totalBudget = 0;
+  let totalSpent = 0;
   let overdueCount = 0;
   all.forEach((p) => {
     byStatus[p.status] = (byStatus[p.status] || 0) + 1;
     totalBudget += Number(p.budget) || 0;
+    totalSpent += expensesTotal(p);
     if (isOverdue(p)) overdueCount += 1;
   });
   const filtered = overviewVisibleProjects();
@@ -1142,7 +1239,7 @@ function overviewTemplate() {
       <td><span class="tag ${STATUS_TAG_CLASS[p.status] || 'tag-planned'}">${esc(p.status)}</span></td>
       <td>${avatarStackHtml((Array.isArray(p.team) && p.team.length) ? p.team : (p.owner ? [p.owner] : []), 'sm') || '—'}</td>
       <td class="${overdue ? 'overdue' : ''}">${p.target_date ? esc(p.target_date) : '—'}</td>
-      <td>${p.budget ? fmtILS(p.budget) : '—'}</td>
+      <td>${p.budget ? fmtILS(p.budget) + (expensesTotal(p) ? ' / ' + fmtILS(expensesTotal(p)) : '') : (expensesTotal(p) ? fmtILS(expensesTotal(p)) : '—')}</td>
       <td>${prog.total ? `${prog.done}/${prog.total}` : '—'}</td>
     </tr>`;
   }).join('');
@@ -1154,10 +1251,11 @@ function overviewTemplate() {
       <div class="stat-card"><div class="stat-kicker">סה"כ פרויקטים</div><div class="stat-value">${all.length}</div></div>
       <div class="stat-card"><div class="stat-kicker">באיחור</div><div class="stat-value" style="${overdueCount ? 'color:var(--color-accent-700);' : ''}">${overdueCount}</div></div>
       <div class="stat-card"><div class="stat-kicker">תקועים</div><div class="stat-value">${byStatus['תקוע'] || 0}</div></div>
-      <div class="stat-card"><div class="stat-kicker">תקציב כולל מוקצה</div><div class="stat-value" style="font-size:17px;">${fmtILS(totalBudget)}</div></div>
+      <div class="stat-card"><div class="stat-kicker">תקציב מוקצה / נוצל בפועל</div><div class="stat-value" style="font-size:17px;${totalSpent > totalBudget ? 'color:#B8480D;' : ''}">${fmtILS(totalBudget)} / ${fmtILS(totalSpent)}</div></div>
     </div>
     <div class="filter-bar">
       <input class="input" placeholder="חיפוש לפי שם, מכון או אחראי…" value="${esc(state.overviewSearch)}" oninput="state.overviewSearch=this.value;render()" style="min-width:240px;">
+      <button type="button" class="btn btn-secondary" onclick="exportProjectsToExcel(overviewVisibleProjects(), 'כל המכונים')">⬇️ ייצוא לאקסל</button>
     </div>
     <div class="card table-wrap">
       <table class="plain">
