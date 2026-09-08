@@ -19,6 +19,13 @@ const CORS_HEADERS = {
 
 const MAX_ATTEMPTS = 8;
 const LOCKOUT_MS = 15 * 60 * 1000;
+const TOKEN_TTL_SECONDS = 24 * 60 * 60;
+// A random secret set once via Supabase project secrets (NOT one of the auto-injected
+// ones) — shared with app-state-gateway so it can verify tokens minted here. Anyone
+// who calls 'verify' successfully gets a token for their own roleKey; nothing about
+// the token itself is secret information, only the ability to forge one is what this
+// key protects.
+const TOKEN_SECRET = Deno.env.get('AUTH_TOKEN_SECRET') || '';
 
 const supabase = createClient(
   Deno.env.get('SUPABASE_URL')!,
@@ -83,6 +90,29 @@ async function recordAttempt(lockKey: string, success: boolean): Promise<void> {
   }
 }
 
+function b64url(bytes: Uint8Array): string {
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function hmacKey(): Promise<CryptoKey> {
+  return crypto.subtle.importKey('raw', new TextEncoder().encode(TOKEN_SECRET), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+}
+
+// Issues a short-lived signed token proving "this browser already completed a real
+// password check for roleKey" — app-state-gateway verifies it (with the same secret)
+// before touching app_state, instead of trusting the anon key alone. Not minted at
+// all when AUTH_TOKEN_SECRET isn't configured yet, so a fresh deploy fails closed
+// (no token) rather than signing with an empty key.
+async function issueToken(roleKey: string): Promise<string | null> {
+  if (!TOKEN_SECRET) return null;
+  const payload = { roleKey, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + TOKEN_TTL_SECONDS };
+  const payloadB64 = b64url(new TextEncoder().encode(JSON.stringify(payload)));
+  const sig = await crypto.subtle.sign('HMAC', await hmacKey(), new TextEncoder().encode(payloadB64));
+  return payloadB64 + '.' + b64url(new Uint8Array(sig));
+}
+
 // Verifies `password` against the real stored value for `roleKey`. Every caller
 // below that needs to authorize an action funnels through this so lockout is
 // applied uniformly, whether it's a login attempt or someone re-proving their
@@ -119,6 +149,7 @@ Deno.serve(async (req: Request) => {
       const roleKey = String(body?.roleKey || '');
       if (!roleKey) return json({ ok: false, error: 'bad_request' }, 400);
       const result = await verifyAgainstStore(roleKey, String(body?.password || ''));
+      if (result.ok) return json({ ...result, token: await issueToken(roleKey) });
       return json(result);
     }
 
@@ -168,7 +199,7 @@ Deno.serve(async (req: Request) => {
       const result = await verifyAgainstStore('nationalRecoveryCode', recoveryCode);
       if (!result.ok) return json(result);
       await supabase.from('role_passwords').upsert({ role_key: 'national', password: newPassword, updated_at: new Date().toISOString() });
-      return json({ ok: true });
+      return json({ ok: true, token: await issueToken('national') });
     }
 
     return json({ ok: false, error: 'unknown_action' }, 400);

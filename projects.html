@@ -166,7 +166,10 @@
 'use strict';
 const SUPABASE_URL = 'https://tnfjcmmblrkhypprjacq.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRuZmpjbW1ibHJraHlwcHJqYWNxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc2NTE5ODMsImV4cCI6MjEwMzIyNzk4M30.SWp32bN-Pm-X4qDX8QbGQED5DYJBZQBg28C4vJ17gns';
-const SUPABASE_STATE_URL = SUPABASE_URL + '/rest/v1/app_state';
+// app_state is never read directly with the anon key anymore (that let anyone on the
+// internet pull every institute's budgets/salaries/employees with one HTTP request,
+// no login needed) — see callAppStateGateway below and app-state-gateway/index.ts.
+const APP_STATE_GATEWAY_URL = SUPABASE_URL + '/functions/v1/app-state-gateway';
 const PROJECTS_URL = SUPABASE_URL + '/rest/v1/projects';
 const TASKS_URL = SUPABASE_URL + '/rest/v1/project_tasks';
 const UPDATES_URL = SUPABASE_URL + '/rest/v1/project_updates';
@@ -182,6 +185,16 @@ async function callRoleAuth(body) {
     const res = await fetch(ROLE_AUTH_URL, { method: 'POST', headers: HEADERS_JSON, body: JSON.stringify(body) });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) return { ok: false, error: json.error || 'server_error', locked: !!json.locked };
+    return json;
+  } catch (e) {
+    return { ok: false, error: 'network' };
+  }
+}
+async function callAppStateGateway(body) {
+  try {
+    const res = await fetch(APP_STATE_GATEWAY_URL, { method: 'POST', headers: HEADERS_JSON, body: JSON.stringify(body) });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: json.error || 'server_error' };
     return json;
   } catch (e) {
     return { ok: false, error: 'network' };
@@ -281,6 +294,7 @@ let state = {
   screen: 'loading', // loading | login | app
   role: sessionStorage.getItem(SESSION_KEY + '_role') || '',
   myInstituteId: sessionStorage.getItem(SESSION_KEY + '_inst') || '',
+  authToken: sessionStorage.getItem(SESSION_KEY + '_token') || '',
   loginRolePick: 'instituteManager',
   loginInstitutePick: '',
   loginPassword: '',
@@ -872,10 +886,13 @@ async function submitLogin() {
   }
   state.role = role;
   state.myInstituteId = role === 'instituteManager' ? instituteId : '';
+  state.authToken = result.token || '';
   sessionStorage.setItem(SESSION_KEY + '_role', state.role);
   sessionStorage.setItem(SESSION_KEY + '_inst', state.myInstituteId);
+  sessionStorage.setItem(SESSION_KEY + '_token', state.authToken);
   state.loginError = '';
   state.loginPassword = '';
+  await fetchAuthenticatedAppData();
   await enterApp();
 }
 
@@ -883,24 +900,38 @@ function logout() {
   stopPolling();
   sessionStorage.removeItem(SESSION_KEY + '_role');
   sessionStorage.removeItem(SESSION_KEY + '_inst');
+  sessionStorage.removeItem(SESSION_KEY + '_token');
   state.role = '';
   state.myInstituteId = '';
+  state.authToken = '';
   state.screen = 'login';
   render();
 }
 
-async function fetchAppStateBasics() {
-  const res = await fetch(SUPABASE_STATE_URL + '?id=eq.1&select=data', { headers: HEADERS_GET });
-  if (!res.ok) throw new Error('state fetch failed');
-  const rows = await res.json();
-  const data = (rows && rows[0] && rows[0].data) || {};
-  // Passwords are never fetched here — see role-auth Edge Function / submitLogin.
-  state.allInstitutes = Array.isArray(data.institutes) ? data.institutes.map((i) => ({ id: i.id, name: i.name })) : [];
-  const byInst = {};
-  (Array.isArray(data.institutes) ? data.institutes : []).forEach((i) => {
-    byInst[i.id] = Array.isArray(i.employees) ? i.employees.map((e) => e.name).filter(Boolean) : [];
-  });
-  state.employeesByInstitute = byInst;
+// Pre-login (and always): institute id/name only, for the login screen's picker.
+// Deliberately the one app_state read that needs no token — see the module-level
+// comment on SUPABASE_APP_STATE_GATEWAY_URL in index.html for why this split exists.
+async function fetchPublicInstitutesForLogin() {
+  const result = await callAppStateGateway({ action: 'publicInstitutes' });
+  if (!result.ok) throw new Error('state fetch failed');
+  state.allInstitutes = Array.isArray(result.institutes) ? result.institutes : [];
+}
+
+// Post-login only: employee names per institute, for the project team-assignment
+// picker. Soft-fails (logs and leaves it empty) rather than blocking the whole app —
+// unlike the institute list itself, this is an enrichment, not something the rest of
+// the screen depends on to function.
+async function fetchAuthenticatedAppData() {
+  try {
+    const result = await callAppStateGateway({ action: 'read', token: state.authToken || '' });
+    if (!result.ok) throw new Error(result.error || 'read failed');
+    const institutes = Array.isArray(result.data && result.data.institutes) ? result.data.institutes : [];
+    const byInst = {};
+    institutes.forEach((i) => { byInst[i.id] = Array.isArray(i.employees) ? i.employees.map((e) => e.name).filter(Boolean) : []; });
+    state.employeesByInstitute = byInst;
+  } catch (e) {
+    console.warn('fetchAuthenticatedAppData failed (non-fatal):', e);
+  }
 }
 
 async function fetchProjectCounts() {
@@ -1399,7 +1430,7 @@ async function enterApp() {
 
 async function init() {
   try {
-    await fetchAppStateBasics();
+    await fetchPublicInstitutesForLogin();
   } catch (e) {
     state.fatalError = 'לא ניתן להתחבר לשרת כרגע. בדוק/י חיבור לאינטרנט ורענן/י את הדף.';
     state.screen = 'app';
@@ -1413,6 +1444,9 @@ async function init() {
     // have vanished, so they always resume.
     const stillValid = state.role !== 'instituteManager' || state.allInstitutes.some((i) => i.id === state.myInstituteId);
     if (stillValid) {
+      // Best-effort — if the stored token expired (24h) since last time, this just
+      // leaves employeesByInstitute empty rather than blocking the resumed session.
+      await fetchAuthenticatedAppData();
       await enterApp();
       return;
     }
