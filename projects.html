@@ -172,8 +172,21 @@ const TASKS_URL = SUPABASE_URL + '/rest/v1/project_tasks';
 const UPDATES_URL = SUPABASE_URL + '/rest/v1/project_updates';
 const DOCS_URL = SUPABASE_URL + '/rest/v1/project_documents';
 const SEND_NOTIFICATION_URL = SUPABASE_URL + '/functions/v1/send-notification';
+const ROLE_AUTH_URL = SUPABASE_URL + '/functions/v1/role-auth';
 const HEADERS_JSON = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY, 'Content-Type': 'application/json' };
 const HEADERS_GET = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY };
+// Password checks go through this Edge Function (shared with the main app) — no
+// real password value is ever fetched into this page. See role-auth/index.ts.
+async function callRoleAuth(body) {
+  try {
+    const res = await fetch(ROLE_AUTH_URL, { method: 'POST', headers: HEADERS_JSON, body: JSON.stringify(body) });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: json.error || 'server_error', locked: !!json.locked };
+    return json;
+  } catch (e) {
+    return { ok: false, error: 'network' };
+  }
+}
 const PROJECTS_SELECT = '*,project_tasks(id,status)';
 const POLL_MS = 20000;
 const MAX_DOC_BYTES = 3 * 1024 * 1024;
@@ -274,7 +287,6 @@ let state = {
   loginError: '',
   allInstitutes: [], // [{id, name}]
   employeesByInstitute: {}, // instituteId -> [names]
-  rolePasswords: null,
   projectListViewMode: 'board', // board | list | timeline
   newTeamMemberPick: '',
   dragProjectId: null,
@@ -435,6 +447,17 @@ function visibleProjects() {
   });
 }
 
+function budgetProgressBarHtml(p) {
+  if (!p.budget) return '';
+  const spent = expensesTotal(p);
+  const pct = Math.round((spent / p.budget) * 100);
+  const pctClamped = Math.max(0, Math.min(pct, 100));
+  const over = spent > p.budget;
+  return `<div style="display:flex;align-items:center;gap:6px;margin-top:2px;">
+    <div class="progress-track" style="flex:1;max-width:160px;"><div class="progress-fill" style="width:${pctClamped}%;background:${over ? '#B8480D' : 'var(--color-accent, #C2410C)'};"></div></div>
+    <span class="muted" style="white-space:nowrap;">${pct}% תקציב${over ? ' — חריגה!' : ''}</span>
+  </div>`;
+}
 function projectCardMetaHtml(p) {
   const overdue = isOverdue(p);
   const team = Array.isArray(p.team) ? p.team : [];
@@ -495,6 +518,7 @@ function listHtml(filtered) {
             <div class="progress-track" style="flex:1;max-width:160px;"><div class="progress-fill" style="width:${pct}%;"></div></div>
             <span class="muted">${prog.done}/${prog.total} משימות</span>
           </div>` : ''}
+          ${budgetProgressBarHtml(p)}
         </div>
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
           <span class="tag ${STATUS_TAG_CLASS[p.status] || 'tag-planned'}">${esc(p.status)}</span>
@@ -524,6 +548,7 @@ function boardHtml(filtered) {
           <div class="progress-track" style="flex:1;"><div class="progress-fill" style="width:${pct}%;"></div></div>
           <span class="muted" style="font-size:10px;white-space:nowrap;">${prog.done}/${prog.total} משימות</span>
         </div>` : ''}
+        ${budgetProgressBarHtml(p)}
         <div class="board-card-meta">
           ${p.priority ? `<span class="tag ${PRIORITY_TAG_CLASS[p.priority] || 'prio-medium'}" style="font-size:10px;padding:2px 8px;">${esc(p.priority)}</span>` : '<span></span>'}
           ${avatarStackHtml(team.length ? team : (p.owner ? [p.owner] : []), 'sm')}
@@ -836,9 +861,12 @@ async function submitLogin() {
   const role = state.loginRolePick;
   const instituteId = state.loginInstitutePick;
   if (role === 'instituteManager' && !instituteId) { state.loginError = 'יש לבחור מכון'; render(); return; }
-  const expected = state.rolePasswords ? state.rolePasswords[roleKey(role, instituteId)] : null;
-  if (!expected || (state.loginPassword || '').trim() !== String(expected).trim()) {
-    state.loginError = 'סיסמה שגויה';
+  if (state.loginSubmitting) return;
+  state.loginSubmitting = true; state.loginError = ''; render();
+  const result = await callRoleAuth({ action: 'verify', roleKey: roleKey(role, instituteId), password: (state.loginPassword || '').trim() });
+  state.loginSubmitting = false;
+  if (!result.ok) {
+    state.loginError = result.locked ? 'יותר מדי ניסיונות — נסה/י שוב בעוד כמה דקות' : result.error === 'network' ? 'שגיאת רשת — נסה/י שוב' : 'סיסמה שגויה';
     render();
     return;
   }
@@ -866,7 +894,7 @@ async function fetchAppStateBasics() {
   if (!res.ok) throw new Error('state fetch failed');
   const rows = await res.json();
   const data = (rows && rows[0] && rows[0].data) || {};
-  state.rolePasswords = data.rolePasswords || {};
+  // Passwords are never fetched here — see role-auth Edge Function / submitLogin.
   state.allInstitutes = Array.isArray(data.institutes) ? data.institutes.map((i) => ({ id: i.id, name: i.name })) : [];
   const byInst = {};
   (Array.isArray(data.institutes) ? data.institutes : []).forEach((i) => {
@@ -1379,9 +1407,12 @@ async function init() {
     return;
   }
   if (state.role && (state.role !== 'instituteManager' || state.myInstituteId)) {
-    // reuse the session only if the expected password key still resolves (institute wasn't deleted meanwhile)
-    const key = roleKey(state.role, state.myInstituteId);
-    if (state.rolePasswords && key in state.rolePasswords) {
+    // Reuse the session (set earlier this tab by a real password check in submitLogin)
+    // only if an instituteManager's institute still exists — it may have been removed
+    // since this sessionStorage entry was written. Other roles have no institute to
+    // have vanished, so they always resume.
+    const stillValid = state.role !== 'instituteManager' || state.allInstitutes.some((i) => i.id === state.myInstituteId);
+    if (stillValid) {
       await enterApp();
       return;
     }
