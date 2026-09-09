@@ -7,22 +7,24 @@
 // a real session token (minted by role-auth on a successful password check) for
 // anything beyond the one public, low-sensitivity action.
 //
-// PER-INSTITUTE ISOLATION (שלב 4ב): the token carries the roleKey it was minted for.
-// For an institute-scoped role — institute_<id> (מנהל מכון) or staff_<id> (צוות מכון):
-//   * READ returns only that institute's entry inside `institutes` (and only its own
-//     general reports), so another institute's budgets/salaries/employees never even
-//     reach the browser.
-//   * WRITE is merged server-side onto the authoritative blob: the scoped role can
-//     replace ONLY its own institute entry and may APPEND to the shared feeds
-//     (messages / generalReports / history) — it can never modify or delete another
-//     institute, edit/remove others' messages/reports, or change national settings.
-// Org-wide roles (national / president / budgetManager / buildingManager) resolve to
-// no scope and read/write the whole blob exactly as before.
+// PER-INSTITUTE ISOLATION + ROLE PERMISSIONS (שלב 4ב + 4ג): the token carries the
+// roleKey it was minted for.
+//   * institute_<id> (מנהל מכון): READ returns only that institute (and only its own
+//     reports/history). WRITE is merged onto the authoritative blob — it fully
+//     controls its own institute entry, manages its own reports/history in place, and
+//     appends chat messages; it can never touch another institute, others' feed items,
+//     or national settings.
+//   * staff_<id> (צוות מכון): same read scope, but WRITE may change ONLY its own
+//     institute's pettyCashTransactions (and only while the institute's
+//     staffCanEditPettyCash flag is not false), and may append (not edit/delete) its
+//     own general reports. Nothing else.
+//   * national / president / budgetManager / buildingManager: no scope — read/write the
+//     whole blob exactly as before.
 //
-// NOTE: read-scoping and write-merging are deployed together on purpose. A scoped
-// read hands the client only its own institute, so if writes still did a full
-// replace the client would push a one-institute blob and wipe everyone else — the
-// merge below is what makes the scoped read safe.
+// Read-scoping and the write-merge ship together on purpose: a scoped read hands the
+// client only its own institute, so a full-replace write would wipe everyone else —
+// the merge is what makes the scoped read safe. The merge logic is mirrored from
+// scoped_merge.reference.js (32 offline unit tests incl. attack + role cases).
 //
 // Deploy with: supabase functions deploy app-state-gateway
 // See ../../../SECURITY_FIX_README.md for the full migration + deploy steps.
@@ -35,8 +37,6 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-// Same secret as role-auth (a project-wide Supabase secret, not one of the
-// auto-injected ones) — role-auth mints tokens, this function only verifies them.
 const TOKEN_SECRET = Deno.env.get('AUTH_TOKEN_SECRET') || '';
 
 const supabase = createClient(
@@ -45,10 +45,7 @@ const supabase = createClient(
 );
 
 function json(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
-  });
+  return new Response(JSON.stringify(body), { status, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } });
 }
 
 function b64urlDecode(str: string): Uint8Array {
@@ -64,8 +61,6 @@ async function hmacKey(): Promise<CryptoKey> {
   return crypto.subtle.importKey('raw', new TextEncoder().encode(TOKEN_SECRET), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
 }
 
-// Verifies a token minted by role-auth's issueToken and returns the decoded payload
-// (so callers can read roleKey), or null if missing/forged/expired.
 async function verifyToken(token: string): Promise<{ roleKey?: string; exp?: number } | null> {
   if (!TOKEN_SECRET || !token) return null;
   const parts = token.split('.');
@@ -82,19 +77,16 @@ async function verifyToken(token: string): Promise<{ roleKey?: string; exp?: num
   }
 }
 
-// The institute a token is confined to, or null for an org-wide role. institute_<id>
-// and staff_<id> are the only scoped roles.
-function scopeOf(payload: { roleKey?: string } | null): string | null {
+// null => org-wide role; otherwise the institute id and whether it's a manager or staff.
+function scopeOf(payload: { roleKey?: string } | null): { id: string; role: 'manager' | 'staff' } | null {
   const rk = payload?.roleKey || '';
-  if (rk.startsWith('institute_')) return rk.slice('institute_'.length);
-  if (rk.startsWith('staff_')) return rk.slice('staff_'.length);
+  if (rk.startsWith('institute_')) return { id: rk.slice('institute_'.length), role: 'manager' };
+  if (rk.startsWith('staff_')) return { id: rk.slice('staff_'.length), role: 'staff' };
   return null;
 }
 
 // ---------------------------------------------------------------------------
-// Scoped-write merge. Kept byte-for-byte in sync with the offline-tested module
-// scratchpad/scoped_merge.js (28 unit tests incl. attack cases). Start from the
-// AUTHORITATIVE server blob and apply only what a scoped role may change.
+// Scoped-write merge — kept in sync with scoped_merge.reference.js (32 unit tests).
 // ---------------------------------------------------------------------------
 function isObj(v: any): boolean { return v && typeof v === 'object' && !Array.isArray(v); }
 
@@ -128,12 +120,18 @@ function appendByEquality(serverArr: any, clientArr: any, keepItem?: (it: any) =
   return out;
 }
 
+// Keep every server item belonging to ANOTHER institute; replace the scope's own slice
+// with exactly what the client submitted for its own institute (add/edit/delete-own).
+function replaceOwnSlice(serverArr: any, clientArr: any, scope: string): any[] {
+  const kept = (Array.isArray(serverArr) ? serverArr : []).filter((it: any) => !it || it.instituteId !== scope);
+  const mine = (Array.isArray(clientArr) ? clientArr : []).filter((it: any) => it && it.instituteId === scope);
+  return kept.concat(mine);
+}
+
 function appendKeys(serverMap: any, clientMap: any): any {
   const out: any = isObj(serverMap) ? { ...serverMap } : {};
   if (!isObj(clientMap)) return out;
-  for (const k of Object.keys(clientMap)) {
-    if (!(k in out)) out[k] = clientMap[k];
-  }
+  for (const k of Object.keys(clientMap)) if (!(k in out)) out[k] = clientMap[k];
   return out;
 }
 
@@ -143,41 +141,57 @@ function mergePresence(serverP: any, clientP: any): any {
   return out;
 }
 
-function mergeScopedWrite(S: any, C: any, instituteId: string): any {
+function mergeOwnInstitute(sOwn: any, cOwn: any, role: string): any {
+  if (!sOwn) return sOwn;
+  if (!cOwn || cOwn.id !== sOwn.id) return sOwn;
+  if (role === 'manager') return cOwn;
+  if (sOwn.staffCanEditPettyCash === false) return sOwn;
+  const next: any = { ...sOwn };
+  if (Array.isArray(cOwn.pettyCashTransactions)) next.pettyCashTransactions = cOwn.pettyCashTransactions;
+  return next;
+}
+
+function mergeScopedWrite(S: any, C: any, instituteId: string, role: string): any {
   const server: any = isObj(S) ? S : {};
   const client: any = isObj(C) ? C : {};
   const R: any = JSON.parse(JSON.stringify(server));
+  const isManager = role === 'manager';
 
   if (Array.isArray(server.institutes)) {
-    const own = Array.isArray(client.institutes)
-      ? client.institutes.find((i: any) => i && i.id === instituteId)
-      : null;
-    if (own && own.id === instituteId) {
-      R.institutes = server.institutes.map((i: any) => (i && i.id === instituteId ? own : i));
-    } else {
-      R.institutes = server.institutes;
-    }
+    const sOwn = server.institutes.find((i: any) => i && i.id === instituteId) || null;
+    const cOwn = Array.isArray(client.institutes) ? client.institutes.find((i: any) => i && i.id === instituteId) : null;
+    const newOwn = mergeOwnInstitute(sOwn, cOwn, role);
+    R.institutes = server.institutes.map((i: any) => (i && i.id === instituteId ? newOwn : i));
   }
 
   R.messages = appendByKey(server.messages, client.messages, 'id');
-  R.generalReports = appendByEquality(server.generalReports, client.generalReports,
-    (r: any) => r && r.instituteId === instituteId);
-  R.historyEvents = appendByKey(server.historyEvents, client.historyEvents, 'key');
-  R.procurementHistoryEvents = appendByKey(server.procurementHistoryEvents, client.procurementHistoryEvents, 'key');
+
+  if (isManager) {
+    R.generalReports = replaceOwnSlice(server.generalReports, client.generalReports, instituteId);
+    R.historyEvents = replaceOwnSlice(server.historyEvents, client.historyEvents, instituteId);
+    R.procurementHistoryEvents = replaceOwnSlice(server.procurementHistoryEvents, client.procurementHistoryEvents, instituteId);
+  } else {
+    R.generalReports = appendByEquality(server.generalReports, client.generalReports, (r: any) => r && r.instituteId === instituteId);
+    R.historyEvents = Array.isArray(server.historyEvents) ? server.historyEvents : [];
+    R.procurementHistoryEvents = Array.isArray(server.procurementHistoryEvents) ? server.procurementHistoryEvents : [];
+  }
+
   R.taskJournals = appendKeys(server.taskJournals, client.taskJournals);
   R.threadReadCounts = appendKeys(server.threadReadCounts, client.threadReadCounts);
   R.presence = mergePresence(server.presence, client.presence);
-
   return R;
 }
 
-// A scoped role sees only its own institute (and only its own general reports); every
-// other top-level feed is returned unchanged (managers share the chat/reports channel).
-function scopeReadData(data: any, scope: string | null): any {
+// A scoped role sees only its own institute and only its own reports/history. Every
+// other top-level field (chat messages, national settings, etc.) is returned as-is.
+function scopeReadData(data: any, scope: { id: string; role: string } | null): any {
   if (!scope || !isObj(data)) return data;
+  const id = scope.id;
   const out: any = { ...data };
-  if (Array.isArray(data.institutes)) out.institutes = data.institutes.filter((i: any) => i && i.id === scope);
-  if (Array.isArray(data.generalReports)) out.generalReports = data.generalReports.filter((r: any) => r && r.instituteId === scope);
+  if (Array.isArray(data.institutes)) out.institutes = data.institutes.filter((i: any) => i && i.id === id);
+  if (Array.isArray(data.generalReports)) out.generalReports = data.generalReports.filter((r: any) => r && r.instituteId === id);
+  if (Array.isArray(data.historyEvents)) out.historyEvents = data.historyEvents.filter((h: any) => h && h.instituteId === id);
+  if (Array.isArray(data.procurementHistoryEvents)) out.procurementHistoryEvents = data.procurementHistoryEvents.filter((p: any) => p && p.instituteId === id);
   return out;
 }
 
@@ -195,9 +209,7 @@ Deno.serve(async (req: Request) => {
   const action = body?.action;
 
   try {
-    // No token needed — this is the one thing an as-yet-unauthenticated visitor is
-    // meant to see: just institute names/ids, for the login screen's picker. Not the
-    // budgets/salaries/employees that live inside each institute.
+    // No token needed — just institute names/ids for the login picker.
     if (action === 'publicInstitutes') {
       const { data } = await supabase.from('app_state').select('data').eq('id', 1).maybeSingle();
       const institutes = Array.isArray(data?.data?.institutes) ? data.data.institutes : [];
@@ -223,11 +235,9 @@ Deno.serve(async (req: Request) => {
 
       let toWrite = data;
       if (scope) {
-        // Merge the scoped role's submission onto the authoritative server blob so it
-        // can only ever touch its own institute + append to shared feeds.
         const { data: cur } = await supabase.from('app_state').select('data').eq('id', 1).maybeSingle();
-        if (!cur || !cur.data) return json({ ok: true }); // nothing to merge into; a scoped role never seeds
-        toWrite = mergeScopedWrite(cur.data, data, scope);
+        if (!cur || !cur.data) return json({ ok: true }); // scoped roles never seed
+        toWrite = mergeScopedWrite(cur.data, data, scope.id, scope.role);
       }
 
       const { error } = await supabase.from('app_state').update({ data: toWrite, updated_at: updatedAt }).eq('id', 1);
