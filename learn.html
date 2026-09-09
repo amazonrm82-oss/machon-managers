@@ -925,9 +925,9 @@ body.preview-phone .app { min-height: 780px; }
 .fp-logo img { width: 100%; height: auto; display: block; }
 .fp-logo-fallback { display: flex; flex-direction: column; align-items: center; gap: 10px; }
 .fp-logo-fallback svg { width: 100%; height: auto; }
-.fp-logo-fallback span {
-  font-family: var(--font-heading); font-size: 15px; font-weight: 500;
-  color: var(--color-neutral-800); white-space: nowrap;
+.fp-wordmark {
+  font-family: var(--font-heading); font-size: 16px; font-weight: 500;
+  color: var(--color-neutral-800); margin-top: -6px;
 }
 
 .fp-gate-head h1 {
@@ -2902,8 +2902,8 @@ window.ICONS = {
       '<path d="M7 50a43 43 0 0 0 43 43" stroke="#4E8B2C"/>' +
       '<path d="M93 50a43 43 0 0 1-43 43" stroke="#E03127"/>' +
       '</g></svg>' +
-      '<span>מכון פוירשטיין</span>' +
-      '</div></div>';
+      '</div>' +
+      '<div class="fp-wordmark">מכון פוירשטיין</div></div>';
   }
 
   /* --------------------------------------------------------------- session */

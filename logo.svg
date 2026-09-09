@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" role="img" aria-label="מכון פוירשטיין">
+  <title>מכון פוירשטיין</title>
+  <defs>
+    <clipPath id="disc"><circle cx="200" cy="200" r="170"/></clipPath>
+  </defs>
+  <g clip-path="url(#disc)">
+    <!-- The four quadrants of the institute mark. -->
+    <path d="M200,200 L30.65,185.18 A170,170 0 0 1 258.14,40.25 Z" fill="#e5b31c"/>
+    <path d="M200,200 L258.14,40.25 A170,170 0 0 1 369.35,214.82 Z" fill="#2b4c9b"/>
+    <path d="M200,200 L369.35,214.82 A170,170 0 0 1 297.51,339.26 Z" fill="#e03127"/>
+    <path d="M200,200 L297.51,339.26 A170,170 0 0 1 30.65,185.18 Z" fill="#4e8b2c"/>
+
+    <!-- The profile, knocked out of the mark and cut by the disc, so the throat
+         runs off the bottom edge cleanly. Front edge: forehead, brow, nose,
+         lips, chin, jaw, throat. Back edge: the sweep of the skull and nape. -->
+    <path fill="#ffffff" d="
+      M196,32
+      C240,34 274,64 288,102
+      C296,124 296,140 292,152
+      C288,164 284,166 286,172
+      C290,182 336,196 350,212
+      C356,220 352,226 338,228
+      C322,230 310,230 310,237
+      C310,244 319,245 316,252
+      C313,259 302,257 304,266
+      C306,275 313,278 310,290
+      C305,308 288,326 264,338
+      C250,345 244,356 244,372
+      L246,400
+      L150,400
+      L156,318
+      C156,298 148,282 140,262
+      C129,234 130,200 138,170
+      C148,132 157,80 165,56
+      C171,38 182,31 196,32 Z"/>
+  </g>
+</svg>

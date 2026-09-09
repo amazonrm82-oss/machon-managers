@@ -92,7 +92,7 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 18px;
+    gap: 14px;
     text-align: center;
   }
 
@@ -101,7 +101,7 @@
   .logo img[hidden], .logo-fallback[hidden] { display: none; }
   .logo-fallback { display: flex; flex-direction: column; align-items: center; gap: 12px; }
   .logo-fallback svg { width: 100%; height: auto; }
-  .logo-fallback span { font-size: 17px; font-weight: 500; white-space: nowrap; }
+  .wordmark { font-size: clamp(15px, 2.4vw, 18px); font-weight: 500; letter-spacing: -0.005em; }
 
   .head h1 {
     margin: 0;
@@ -243,9 +243,9 @@
             <path d="M93 50a43 43 0 0 1-43 43" stroke="var(--red)"/>
           </g>
         </svg>
-        <span>מכון פוירשטיין</span>
       </div>
     </div>
+    <div class="wordmark">מכון פוירשטיין</div>
     <h1>ברוכים הבאים</h1>
     <p>בחר/י את המערכת שברצונך לפתוח.</p>
   </header>

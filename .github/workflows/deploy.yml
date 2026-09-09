@@ -42,10 +42,8 @@ jobs:
           cp ms-config.js _site/ms-config.js
           cp manifest.json _site/manifest.json
           cp sw.js _site/sw.js
-          cp icon-192.png icon-512.png icon-180.png icon-32.png _site/
-          # The institute logo is optional — the pages fall back to the brand
-          # ring and wordmark until one of these files exists.
-          for f in logo.svg logo.png; do [ -f "$f" ] && cp "$f" _site/ || true; done
+          cp icon-192.png icon-512.png icon-180.png icon-32.png icon-maskable.png _site/
+          cp logo.svg _site/logo.svg
       - uses: actions/configure-pages@v5
         with:
           enablement: true
