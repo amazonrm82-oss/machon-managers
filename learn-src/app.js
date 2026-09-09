@@ -41,6 +41,7 @@
     name: '',
     registered: false,
     libTab: 'assets',
+    reviewTarget: '',
     libTopic: 'שיקום קוגניטיבי',
     libSort: 'used',
     scheduleFilter: 'all',
@@ -50,7 +51,18 @@
     quizDone: false,
     readNotifs: false,
     rubric: [2, 1, 2, 3],
-    relevance: 2
+    relevance: 2,
+
+    // Everything a person types, keyed by screen + field label. Written on
+    // every keystroke so nothing is lost to a refresh or a closed tab.
+    forms: {},
+    // Work that has been handed in: chapter tests, the final exam, practice
+    // records, observations, stage meetings, file notes, uploaded assets.
+    submissions: {},
+    practiceEntries: [],
+    feedback: {},
+    records: { observations: [], meetings: [], notes: [] },
+    userAssets: []
   };
 
   var state = load();
@@ -68,6 +80,15 @@
         for (var key in saved) if (key in defaults) s[key] = saved[key];
       }
       if (!Array.isArray(s.rubric) || s.rubric.length !== 4) s.rubric = defaults.rubric.slice();
+      if (!s.forms || typeof s.forms !== 'object') s.forms = {};
+      if (!s.submissions || typeof s.submissions !== 'object') s.submissions = {};
+      if (!Array.isArray(s.practiceEntries)) s.practiceEntries = [];
+      if (!s.feedback || typeof s.feedback !== 'object') s.feedback = {};
+      if (!s.records || typeof s.records !== 'object') s.records = { observations: [], meetings: [], notes: [] };
+      ['observations', 'meetings', 'notes'].forEach(function (k) {
+        if (!Array.isArray(s.records[k])) s.records[k] = [];
+      });
+      if (!Array.isArray(s.userAssets)) s.userAssets = [];
     } catch (e) { /* private mode, cleared storage — start fresh */ }
     return s;
   }
@@ -222,17 +243,30 @@
     var testsSubmitted = chapters.filter(function (c) { return c.submitted; }).length;
 
     var practiceBase = Math.min(60, (stageIdx - 1) * 20);
-    var practiceHours = practiceBase + (state.practiceAdded ? 1.5 : 0);
+    var ownPracticeHours = state.practiceEntries.reduce(function (a, e) { return a + (Number(e.hours) || 0); }, 0);
+    var practiceHours = Math.round((practiceBase + ownPracticeHours) * 10) / 10;
     var practicePct = Math.min(100, Math.round(practiceHours / 60 * 100));
-    var observations = [0, 1, 3, 4][stageIdx - 1];
-    var meetings = Math.min(3, stageIdx - 1);
+    var observations = [0, 1, 3, 4][stageIdx - 1] + state.records.observations.length;
+    var meetings = Math.min(3, (stageIdx - 1) + state.records.meetings.length);
     var ceHours = [0, 1.5, 3.5, 5][stageIdx - 1] + (state.quizDone ? 2 : 0);
     var progressPct = done ? 100 : Math.round((testsDone + testsSubmitted) / 16 * 100);
 
     var current = chapters.filter(function (c) { return c.current; })[0]
       || chapters.filter(function (c) { return c.submitted; })[0]
       || chapters[0];
-    var reviewChapter = chapters.filter(function (c) { return c.done && c.hasNotes; })[0] || c1[0];
+
+    // What the manager opens: the learner's own most recent hand-in that has
+    // no feedback yet, falling back to the seeded one that is waiting.
+    var pendingId = Object.keys(state.submissions)
+      .filter(function (k) { return k.indexOf('chapter:') === 0; })
+      .map(function (k) { return k.slice(8); })
+      .filter(function (id) { return !state.feedback[id]; })
+      .pop();
+    var toMark = chapters.filter(function (c) { return c.id === pendingId; })[0] || current;
+    // Whichever chapter the learner opened, falling back to the first one
+    // that has feedback on it.
+    var reviewChapter = chapters.filter(function (c) { return c.id === state.reviewTarget; })[0]
+      || chapters.filter(function (c) { return c.done && c.hasNotes; })[0] || c1[0];
     var stageLabel = done ? 'מוסמך' : stageIdx + ' · ' + ['פוירשטיין', 'שיקום', 'אגף'][stageIdx - 1];
 
     var practiceAll = [
@@ -251,14 +285,16 @@
         };
       });
 
-    if (state.practiceAdded) {
+    state.practiceEntries.slice().reverse().forEach(function (e) {
       practiceAll.unshift({
-        date: 'היום', dur: '1.5 ש׳', stageText: 'שלב ' + Math.min(3, stageIdx),
-        sup: managerName, tool: 'תרגול קשב', note: 'הרשומה שלי',
-        appIcon: 'hourglass-medium', appText: 'ממתין לאישור', appColor: 'var(--color-neutral-700)'
+        date: e.date, dur: e.hours + ' ש׳', stageText: e.stage,
+        sup: e.sup, tool: e.tool, note: e.note,
+        appIcon: e.approved ? 'fill:check-circle' : 'hourglass-medium',
+        appText: e.approved ? 'אושר' : 'ממתין לאישור',
+        appColor: e.approved ? 'var(--color-accent-700)' : 'var(--color-neutral-700)'
       });
-    }
-    var practice = practiceAll.slice(0, 5);
+    });
+    var practice = practiceAll.slice(0, 6);
 
     var ceList = [
       { date: '14.9', title: 'קשב לאחר פגיעת ראש — מהקליניקה לשגרה', hrs: '1.5', src: 'מרצה חיצונית' },
@@ -317,6 +353,7 @@
       stageIdx: stageIdx, done: done, notDone: !done, day1: day === 1,
       stages: stages, chapters: chapters, bonusList: bonusList,
       current: current, currentStage: ['שיטת פוירשטיין', 'שיקום קוגניטיבי', 'הכשרת אגף'][current.no - 1],
+      toMark: toMark,
       reviewChapter: reviewChapter, hasReview: testsDone > 0,
       tests: chapters.filter(function (c) { return c.done || c.submitted; }).reverse(),
       hasTests: testsDone + testsSubmitted > 0,
@@ -333,7 +370,10 @@
       nextDay: day >= 90 ? 1 : day >= 60 ? 90 : day >= 30 ? 60 : 30,
       dayText: 'יום ' + day + ' מתוך 90',
       certValid: 'עד 5.12.2028',
-      cond1: done || testsDone === 16, cond2: done, cond3: practiceHours >= 60,
+      ownSubmissions: state.submissions, ownFeedback: state.feedback,
+      ownRecords: state.records, ownAssets: state.userAssets,
+      finalSubmitted: !!state.submissions.final,
+      cond1: done || testsDone === 16, cond2: done || !!state.submissions.final, cond3: practiceHours >= 60,
       cond1Text: (done ? 16 : testsDone) + ' מתוך 16 מבחני פרק עם משוב',
       cond3Text: practiceHours + ' מתוך 60 שעות פרקטיקה מאושרות',
       heroKicker: done ? 'הכשרה הושלמה · יום ' + day
@@ -430,25 +470,39 @@
       : (currentUser && currentUser.via === 'demo' ? 'מצב הדגמה · ללא התחברות' : 'מחובר/ת מקומית');
     return '<div class="accountmenu" role="menu">' +
       '<div class="who"><span class="n">' + esc(v.name) + '</span><span class="e">' + who + '</span></div>' +
+      '<div class="langrow" role="group" aria-label="שפת הממשק">' +
+      '<span>שפה</span>' +
+      '<span class="seg">' +
+      '<button type="button" data-act="lang" data-arg="he" aria-pressed="' + (v.lang === 'he') + '">עברית</button>' +
+      '<button type="button" data-act="lang" data-arg="en" aria-pressed="' + (v.lang === 'en') + '">EN</button>' +
+      '</span></div>' +
       '<a role="menuitem" href="./">' + icon('house') + '<span>בחירת מערכת</span></a>' +
       '<button type="button" role="menuitem" data-act="signOut">' + icon('x') + '<span>יציאה</span></button>' +
       '</div>';
   }
 
+  /* The demo controls — time travel, reset, the phone preview — exist to show
+     the system, not to use it. A learner signed in with a real account never
+     sees them; they appear for the demo session and for anyone who asks with
+     ?demo=1. The language switch is a real feature and lives in the account
+     menu instead. */
+  function isDemoMode() {
+    if (typeof location !== 'undefined' && /[?&]demo=1/.test(location.search)) return true;
+    return !!(currentUser && currentUser.via === 'demo');
+  }
+
   function demobar(v) {
+    if (!isDemoMode()) return '';
     var p = state.preview;
     return '' +
       '<div class="demobar">' +
+      '<span class="demotag">מצב הדגמה</span>' +
       '<div class="seg" role="group" aria-label="תצוגה">' +
       '<button type="button" data-act="preview" data-arg="auto" aria-pressed="' + (p === 'auto') + '">' + icon('desktop') + '<span>' + esc(v.T.auto) + '</span></button>' +
       '<button type="button" data-act="preview" data-arg="phone" aria-pressed="' + (p === 'phone') + '">' + icon('device-mobile') + '<span>' + esc(v.T.phone) + '</span></button>' +
       '</div>' +
       '<button type="button" class="timebtn" data-act="advanceDay">' + icon('fast-forward') +
       '<span>' + esc(v.T.time) + ' · ' + esc(v.T.day) + ' ' + v.day + '</span></button>' +
-      '<div class="seg" role="group" aria-label="שפה">' +
-      '<button type="button" data-act="lang" data-arg="he" aria-pressed="' + (v.lang === 'he') + '">עב</button>' +
-      '<button type="button" data-act="lang" data-arg="en" aria-pressed="' + (v.lang === 'en') + '">EN</button>' +
-      '</div>' +
       '<button type="button" class="timebtn" data-act="reset">' + icon('clock-clockwise') + '<span>איפוס הדמו</span></button>' +
       (v.T.hint ? '<span class="demohint">' + esc(v.T.hint) + '</span>' : '') +
       '</div>';
@@ -465,9 +519,13 @@
     return '<div class="bar ' + (cls2 || '') + '"><i style="width:' + pct + '%"></i></div>';
   }
 
-  function textarea(rows, placeholder, value) {
+  /* `label` names the box for a screen reader when it is not already wrapped
+     in a <label> — the open questions, whose prompt sits in its own element. */
+  function textarea(rows, placeholder, value, label) {
     return '<textarea class="textarea" rows="' + rows + '"' +
-      (placeholder ? ' placeholder="' + esc(placeholder) + '"' : '') + '>' + esc(value || '') + '</textarea>';
+      (placeholder ? ' placeholder="' + esc(placeholder) + '"' : '') +
+      (label ? ' aria-label="' + esc(label) + '"' : '') +
+      '>' + esc(value || '') + '</textarea>';
   }
 
   function field(label, control) {
@@ -547,7 +605,7 @@
     h += '<div class="cols">' +
       '<div class="hero flex-hero">' +
       '<div class="kicker">' + esc(v.heroKicker) + '</div>' +
-      '<div class="hero-title">' + esc(v.heroTitle) + '</div>' +
+      '<h1 class="hero-title">' + esc(v.heroTitle) + '</h1>' +
       '<div class="hero-body">' + esc(v.heroBody) + '</div>' +
       '<div class="row">' +
       (v.notDone
@@ -603,7 +661,7 @@
     if (v.hasTests) {
       h += '<div class="card"><div class="rows">' +
         (v.hasReview
-          ? '<button type="button" class="rowitem" data-act="go" data-arg="review">' +
+          ? '<button type="button" class="rowitem" data-act="review" data-arg="' + esc(v.reviewChapter.id) + '">' +
           icon('fill:chat-circle-text', 'ok') +
           '<span class="body"><span class="t">' + esc(v.reviewChapter.id + ' ' + v.reviewChapter.title) + '</span>' +
           '<span class="s" style="color:var(--color-accent-700)">נבדק · 2 הערות מ' + esc(v.managerName) + ' · לצפייה</span></span>' +
@@ -649,7 +707,7 @@
       '<div class="kicker accent">' + esc(v.currentStage) + ' · פרק ' + esc(v.current.id) + '</div>' +
       '<h1 class="h1">' + esc(v.current.title) + '</h1>' +
       '<div class="small muted">כ-55 דקות · וידאו עם כתוביות · בסופו מבחן פרק ללא ציון</div></div>' +
-      '<div class="video"><button type="button" class="play" data-act="toast" data-arg="הווידאו יתנגן במערכת החיה">' + icon('fill:play') + '</button>' +
+      '<div class="video"><button type="button" class="play" aria-label="הפעלת הווידאו של הפרק" data-act="toast" data-arg="הווידאו יתנגן במערכת החיה">' + icon('fill:play') + '</button>' +
       '<div class="controls"><span class="track"><i style="width:22%"></i></span>' +
       '<span>12:10 מתוך 55:00</span>' + icon('closed-captioning') + icon('download-simple') + '</div></div>' +
       '<div class="card pad stack s14">' +
@@ -698,17 +756,22 @@
       qs.map(function (q, i) {
         return '<div class="card pad stack s12">' +
           '<div class="qline"><span class="qno">' + (i + 1) + '</span><span class="qtext">' + esc(q[1]) + '</span></div>' +
-          textarea(q[0], 'התשובה שלך…') + '</div>';
+          textarea(q[0], 'התשובה שלך…', '', 'שאלה ' + (i + 1) + ': ' + q[1]) + '</div>';
       }).join('') +
       '</div>' +
       '<div class="row" style="gap:14px">' +
       '<button type="button" class="btn btn-primary btn-lg" data-act="submitTest">' + icon('paper-plane-tilt') + '<span>שליחה ל' + esc(v.managerName) + '</span></button>' +
-      '<button type="button" class="btn btn-quiet btn-lg" data-act="toast" data-arg="הטיוטה נשמרה">שמירת טיוטה</button>' +
+      '<button type="button" class="btn btn-quiet btn-lg" data-act="toast" data-arg="הטיוטה נשמרת מעצמה — אפשר לסגור ולחזור">שמירת טיוטה</button>' +
       '</div></div>';
   };
 
   /* 5 — משוב מנהל (תצוגת עובד) */
   screens.review = function (v) {
+    // Once this learner has actually submitted this chapter, show what they
+    // wrote and what their manager wrote back — not the worked example.
+    var own = v.ownSubmissions['chapter:' + v.reviewChapter.id];
+    var ownFb = v.ownFeedback[v.reviewChapter.id];
+
     function qa(no, q, a, fb) {
       return '<div class="qa"><div class="q">' +
         '<div class="qline"><span class="qno">' + no + '</span><span class="qtext">' + esc(q) + '</span></div>' +
@@ -721,6 +784,34 @@
           '</div></div>'
           : '<div class="none">' + icon('check') + '<span>ללא הערה</span></div>') +
         '</div>';
+    }
+
+    if (own) {
+      var fbNotes = ownFb ? ownFb.notes : [];
+      return '<div class="page read">' +
+        back('file', 'חזרה לתיק שלי') +
+        '<div class="stack s8">' +
+        '<div class="row tight">' +
+        '<span class="kicker accent">מבחן פרק · ' + esc(own.chapter + ' ' + own.title) + '</span>' +
+        (ownFb
+          ? '<span class="tag">נבדק · ' + fbNotes.length + ' הערות</span>'
+          : '<span class="tag neutral">ממתין למשוב ' + esc(v.managerName) + '</span>') + '</div>' +
+        '<h1 class="h1">' + (ownFb ? 'התשובות שלך והמשוב של ' + esc(v.managerName) : 'התשובות שלך') + '</h1>' +
+        '<div class="small muted">הוגש ביום ' + own.day + (ownFb ? ' · משוב ניתן ביום ' + ownFb.day : ' · יעד משוב: עד 3 ימי עבודה') + '</div></div>' +
+        '<div class="stack s14">' +
+        own.answers.map(function (a, i) {
+          var note = fbNotes[i];
+          return '<div class="qa"><div class="q">' +
+            '<div class="qline"><span class="qno">' + (i + 1) + '</span>' +
+            '<span class="qtext">' + esc(a.label) + '</span></div>' +
+            '<div class="answer">' + esc(a.value) + '</div></div>' +
+            (note
+              ? '<div class="fb"><div class="stack s6"><span class="label">משוב ' + esc(v.managerName) + '</span>' +
+                '<span class="val">' + esc(note.value) + '</span></div></div>'
+              : '<div class="none">' + icon('hourglass-medium') + '<span>ממתין למשוב</span></div>') +
+            '</div>';
+        }).join('') +
+        '</div></div>';
     }
 
     return '<div class="page read">' +
@@ -771,17 +862,17 @@
       '<div class="kicker">שלב 1 · שיטת פוירשטיין</div>' +
       '<div class="card pad stack s12"><div class="qline"><span class="qno">1</span>' +
       '<span class="qtext">בחר/י שלושה קריטריוני תיווך והראה/י איך הם הופיעו — או נעדרו — במפגש אמיתי אחד.</span></div>' +
-      textarea(4, 'התשובה שלך…') + '</div>' +
+      textarea(4, 'התשובה שלך…', '', 'שאלה 1: בחר/י שלושה קריטריוני תיווך והראה/י איך הם הופיעו — או נעדרו — במפגש אמיתי אחד') + '</div>' +
       '<div class="card pad stack s12"><div class="qline"><span class="qno">2</span>' +
       '<span class="qtext">מה ההבדל בין הערכה דינמית להערכה סטטית, ולמה זה משנה למטופל שלך?</span></div>' +
-      textarea(4, 'התשובה שלך…') + '</div>' +
+      textarea(4, 'התשובה שלך…', '', 'שאלה 2: מה ההבדל בין הערכה דינמית להערכה סטטית') + '</div>' +
       '<div class="small muted" style="padding:4px 0">שאלות 3–4 · שלב 1 · ואז 4 שאלות בשיקום קוגניטיבי ו-4 בהכשרת האגף</div>' +
       '</div>' +
       '<div class="row" style="gap:14px">' +
       (v.notDone
         ? '<button type="button" class="btn btn-primary btn-lg" data-act="submitFinal">' + icon('paper-plane-tilt') + '<span>הגשה ל' + esc(v.managerName) + '</span></button>'
         : '') +
-      '<button type="button" class="btn btn-quiet btn-lg" data-act="toast" data-arg="הטיוטה נשמרה">שמירת טיוטה</button>' +
+      '<button type="button" class="btn btn-quiet btn-lg" data-act="toast" data-arg="הטיוטה נשמרת מעצמה — אפשר לסגור ולחזור">שמירת טיוטה</button>' +
       '<span class="tiny muted">אפשר לכתוב לאורך כמה ימים.</span>' +
       '</div></div>';
   };
@@ -829,7 +920,7 @@
       '<div class="card-head"><span class="h4">מבחנים ומשובים</span><span class="small muted">' + esc(v.testsText) + '</span></div>' +
       (v.hasTests
         ? '<div class="rows">' + v.tests.map(function (t) {
-          return '<button type="button" class="rowitem" data-act="go" data-arg="review">' +
+          return '<button type="button" class="rowitem" data-act="review" data-arg="' + esc(t.id) + '">' +
             icon(t.icon, '').replace('class="i ', 'style="color:' + t.iconColor + '" class="i ') +
             '<span class="body"><span class="t">' + esc(t.id + ' ' + t.title) + '</span>' +
             '<span class="s">' + esc(t.statusText) + '</span></span>' + icon('arrow-left', 'flip ok') + '</button>';
@@ -921,9 +1012,10 @@
       { act: 'library', icon: 'user-focus', kicker: 'מומחה · מי יודע מה', title: 'ד״ר יעל אברמסון · קשב ותפקודים ניהוליים', desc: 'שעת זמינות: יום ג׳ 14:00–15:00 · שאלה ישירה ב-Teams' }
     ];
     return '<div class="page narrow">' +
+      '<h1 class="sr-only">חיפוש בכל הידע של המכון</h1>' +
       '<div class="row nowrap" style="background:var(--color-neutral-100);border-radius:999px;box-shadow:var(--ring-accent);padding:6px 20px;min-height:48px;gap:12px">' +
       icon('magnifying-glass', 'ok') +
-      '<input class="input" style="border:0;background:transparent;padding:6px 0;font-size:16px;min-height:36px" value="קשב" aria-label="חיפוש">' +
+      '<input class="input" style="border:0;background:transparent;padding:6px 0;font-size:16px;min-height:44px" value="קשב" aria-label="חיפוש">' +
       '</div>' +
       '<div class="small muted">7 תוצאות · מהמאגר, מפרקי ההכשרה ומתמלולי ההקלטות</div>' +
       '<div class="stack">' +
@@ -1109,7 +1201,7 @@
 
       '<div class="cols">' +
       '<div class="flex-main">' +
-      '<div class="video"><button type="button" class="play" data-act="toast" data-arg="ההקלטה תתנגן במערכת החיה">' + icon('fill:play') + '</button>' +
+      '<div class="video"><button type="button" class="play" aria-label="הפעלת הקלטת השיעור" data-act="toast" data-arg="ההקלטה תתנגן במערכת החיה">' + icon('fill:play') + '</button>' +
       '<div class="controls"><span class="track"><i style="width:100%"></i></span><span>1:52:10</span>' + icon('closed-captioning') + '</div></div>' +
       '<div class="card pad stack s12">' +
       '<span class="h4">חומרים · אחרי השיעור</span>' +
@@ -1148,7 +1240,7 @@
     var h = '<div class="page" style="gap:22px">' +
       '<div class="row between" style="align-items:flex-end;gap:16px">' +
       '<div class="stack s6"><h1 class="h1">מאגר הידע</h1>' +
-      '<div class="small muted">162 נכסים · 12 מומחים · 6 נושאים · העלאה חופשית לכל עובד</div></div>' +
+      '<div class="small muted">' + (162 + v.ownAssets.length) + ' נכסים · 12 מומחים · 6 נושאים · העלאה חופשית לכל עובד</div></div>' +
       '<button type="button" class="btn btn-primary" data-act="go" data-arg="upload">' + icon('upload-simple') + '<span>העלאת נכס ידע</span></button>' +
       '</div>' +
       '<button type="button" class="searchbtn" style="flex:0 0 auto;width:100%;background:var(--color-neutral-100);box-shadow:var(--ring);border:0;padding:13px 20px;min-height:48px;font-size:15px" data-act="go" data-arg="search">' +
@@ -1162,6 +1254,16 @@
       var topic = TOPICS.filter(function (t) { return t.name === state.libTopic; })[0] || TOPICS[1];
       var list = ASSETS.slice().sort(function (a, b) {
         return state.libSort === 'used' ? b.uses - a.uses : a.fresh - b.fresh;
+      });
+      // Anything this person published sits at the top — it is the newest
+      // thing in the library and the reason they came back to look.
+      v.ownAssets.forEach(function (a) {
+        list.unshift({
+          id: a.id, icon: 'file-doc', kind: a.kind, kindClass: '', uses: 0, fresh: 0,
+          title: a.title,
+          desc: 'הועלה על ידך · ' + a.topic + ' · קהל: ' + a.audience,
+          meta: a.by + ' · ביום ' + a.day + ' · ממתין לתיוג רכז ההדרכה'
+        });
       });
       h += '<div class="chips">' + TOPICS.map(function (t) {
         return '<button type="button" class="chip" data-act="libTopic" data-arg="' + esc(t.name) + '" aria-pressed="' + (t.name === topic.name) + '">' + esc(t.name + ' · ' + t.n) + '</button>';
@@ -1361,13 +1463,13 @@
     return '<div class="page" style="gap:20px">' +
       back('admin', 'חזרה לצוות') +
       '<div class="stack s8"><div class="kicker accent">מבחנים לבדיקה · תצוגת מנהל</div>' +
-      '<h1 class="h1">' + esc(v.name + ' · ' + v.current.id + ' ' + v.current.title) + '</h1>' +
+      '<h1 class="h1">' + esc(v.name + ' · ' + v.toMark.id + ' ' + v.toMark.title) + '</h1>' +
       '<div class="small muted">הוגש היום · יעד משוב: 3 ימי עבודה · אין ציון — תבנית משוב אחידה לכל שאלה</div></div>' +
       '<div class="cols">' +
       '<div class="card" style="flex:1 1 240px;padding:8px;display:flex;flex-direction:column">' +
       '<div class="rowitem" style="background:var(--color-accent-100)">' +
       '<span class="avatar-sm tint">' + esc(v.initials) + '</span>' +
-      '<span class="body"><span class="t" style="color:var(--color-accent-800)">' + esc(v.name + ' · ' + v.current.id) + '</span>' +
+      '<span class="body"><span class="t" style="color:var(--color-accent-800)">' + esc(v.name + ' · ' + v.toMark.id) + '</span>' +
       '<span class="s" style="color:var(--color-accent-700)">הוגש היום</span></span></div>' +
       '<div class="rowitem"><span class="avatar-sm">דש</span>' +
       '<span class="body"><span class="t">דנה שרון · 3.2 אבחון וקביעת מטרות</span><span class="s">הוגש אתמול</span></span></div>' +
@@ -1383,7 +1485,8 @@
         '״זיכרון עבודה זה כמו שולחן עבודה קטן. אם שמים עליו יותר מדי דברים — משהו נופל. אנחנו לומדים לשים פחות דברים בכל פעם, ולסדר אותם.״') +
       '<div class="small muted">שאלות 3–4 למטה · ״בנק משובים טובים״ במאגר לדוגמאות</div>' +
       '<div class="card pad-sm stack s8">' +
-      '<span class="tiny muted">הערה כללית לעובד/ת · שורה-שתיים בראש המבחן</span>' + textarea(2, '…') + '</div>' +
+      '<span class="tiny muted">הערה כללית לעובד/ת · שורה-שתיים בראש המבחן</span>' +
+      textarea(2, '…', '', 'הערה כללית לעובד/ת') + '</div>' +
       '<div class="row">' +
       '<button type="button" class="btn btn-primary btn-lg" data-act="sendFeedback">' + icon('check') + '<span>שליחת משוב</span></button>' +
       '<button type="button" class="btn btn-quiet btn-lg" data-act="go" data-arg="stageMeeting">' + icon('calendar-plus') + '<span>לקבוע שיחה</span></button>' +
@@ -1465,7 +1568,7 @@
       '<div class="card pad stack s12">' +
       '<div class="stack s6"><span class="h4">הערת סיכום לתיק</span>' +
       '<span class="small muted">לא חוסמת. נראית לעובד/ת ומצורפת לתעודה.</span></div>' +
-      textarea(3, 'שורה-שתיים על המסלול: מה בלט, מה להמשיך לפתח') +
+      textarea(3, 'שורה-שתיים על המסלול: מה בלט, מה להמשיך לפתח', '', 'הערת סיכום לתיק') +
       '<div class="row">' +
       '<button type="button" class="btn btn-primary" data-act="saveNote">שמירת הערה</button>' +
       '<span class="tiny muted">חתימות: ' + esc(v.managerName) + ' (מנהל) · רכז הדרכה</span></div>' +
@@ -1495,13 +1598,13 @@
       '<div class="card-head"><span class="h4">משובים שחצו את היעד</span></div>' +
       '<div class="escrow"><span>חיפה · אלון פרץ ← נטע גל · 2.3 זיכרון</span>' +
       '<span class="small" style="color:var(--color-warn-fg)">7 ימים</span>' +
-      '<button type="button" class="btn btn-outline btn-sm" style="font-size:12px;padding:7px 12px;min-height:34px" data-act="toast" data-arg="תזכורת נשלחה">תזכורת</button></div>' +
+      '<button type="button" class="btn btn-outline btn-sm" style="font-size:12px;padding:9px 14px;min-height:40px" data-act="toast" data-arg="תזכורת נשלחה">תזכורת</button></div>' +
       '<div class="escrow"><span>תל אביב · נעמה ברק ← שי לוין · 3.1 טראומה</span>' +
       '<span class="small" style="color:var(--color-warn-fg)">6 ימים</span>' +
-      '<button type="button" class="btn btn-outline btn-sm" style="font-size:12px;padding:7px 12px;min-height:34px" data-act="toast" data-arg="תזכורת נשלחה">תזכורת</button></div>' +
+      '<button type="button" class="btn btn-outline btn-sm" style="font-size:12px;padding:9px 14px;min-height:40px" data-act="toast" data-arg="תזכורת נשלחה">תזכורת</button></div>' +
       '<div class="escrow"><span>באר שבע · יובל אדרי ← ליאת כץ · 1.4 מכשירים</span>' +
       '<span class="small" style="color:var(--color-danger-fg)">11 ימים · הרכז מגיב</span>' +
-      '<button type="button" class="btn btn-primary btn-sm" style="font-size:12px;padding:7px 12px;min-height:34px" data-act="go" data-arg="managerTest">לבדיקה</button></div>' +
+      '<button type="button" class="btn btn-primary btn-sm" style="font-size:12px;padding:9px 14px;min-height:40px" data-act="go" data-arg="managerTest">לבדיקה</button></div>' +
       '</div>' +
       '<div class="card clip">' +
       '<div class="card-head"><span class="h4">לפי סניף</span></div>' +
@@ -1535,9 +1638,15 @@
   var actions = {
     go: function (arg) { go(arg); },
 
+    // Open one specific chapter's test and feedback.
+    review: function (arg) {
+      accountOpen = false;
+      set({ reviewTarget: arg || '', screen: 'review' }, { top: true });
+    },
+
     preview: function (arg) { set({ preview: arg }); },
 
-    lang: function (arg) { set({ lang: arg }); },
+    lang: function (arg) { accountOpen = true; set({ lang: arg }); },
 
     reset: function () {
       var keep = { preview: state.preview, lang: state.lang };
@@ -1566,19 +1675,44 @@
     },
 
     submitTest: function () {
+      var v = derive();
+      var prefix = 'test/' + v.current.id + '|';
+      state.submissions['chapter:' + v.current.id] = {
+        chapter: v.current.id, title: v.current.title, day: v.day,
+        answers: formsFor(prefix)
+      };
       set({ testSubmitted: true, screen: 'home' }, { top: true });
+      toast('המבחן נשלח ל' + MANAGER + ' · התשובות נשמרו בתיק');
     },
 
     submitFinal: function () {
-      toast('המבחן המסכם הוגש ל' + MANAGER);
+      var v = derive();
+      state.submissions.final = { day: v.day, answers: formsFor('final/|') };
+      save();
+      render();
+      toast('המבחן המסכם הוגש ל' + MANAGER + ' · התשובות נשמרו');
     },
 
     addPractice: function () {
-      set({ practiceAdded: true, screen: 'file' }, { top: true });
-      toast('הרשומה נשלחה לאישור ' + MANAGER);
+      var v = derive();
+      var dur = formValue('practiceNew', 'משך', 'שעה וחצי');
+      var hours = { 'שעה': 1, 'שעה וחצי': 1.5, 'שעתיים': 2, 'חצי יום': 4 }[dur] || 1.5;
+      state.practiceEntries.push({
+        date: formValue('practiceNew', 'תאריך', 'היום'),
+        hours: hours,
+        stage: formValue('practiceNew', 'שלב', 'שלב ' + v.stageIdx),
+        sup: formValue('practiceNew', 'מי ליווה', MANAGER),
+        tool: formValue('practiceNew', 'מכשיר', 'תרגול קשב'),
+        note: formValue('practiceNew', 'הערה', ''),
+        approved: false
+      });
+      clearForms('practiceNew/');
+      set({ screen: 'file' }, { top: true });
+      toast(hours + ' שעות נרשמו · ממתין לאישור ' + MANAGER);
     },
 
     submitQuiz: function () {
+      state.submissions.sessionQuiz = { day: state.day, answers: formsFor('sessionAfter/|') };
       set({ quizDone: true });
       toast('2 שעות המשך נזקפו לפנקס');
     },
@@ -1588,8 +1722,20 @@
     uploadPrivate: function (arg) { set({ uploadPrivate: arg === '1' }); },
 
     publishAsset: function () {
-      set({ screen: 'library', libTab: 'assets' }, { top: true });
-      toast('הנכס פורסם למאגר · רכז ההדרכה יתייג בדיעבד');
+      var v = derive();
+      var title = formValue('upload', 'כותרת', '');
+      if (!title.trim()) { toast('צריך כותרת לפני פרסום'); return; }
+      state.userAssets.unshift({
+        id: 'u' + Date.now(),
+        title: title,
+        topic: formValue('upload', 'נושא', TOPICS[1].name),
+        kind: formValue('upload', 'סוג', 'מסמך'),
+        audience: formValue('upload', 'קהל', 'מדריכים'),
+        by: v.name, day: v.day
+      });
+      clearForms('upload/');
+      set({ screen: 'library', libTab: 'assets', uploadPrivate: false }, { top: true });
+      toast('״' + title + '״ פורסם למאגר');
     },
 
     libTab: function (arg) { set({ libTab: arg }); },
@@ -1605,21 +1751,48 @@
     },
 
     saveObservation: function () {
+      var v = derive();
+      state.records.observations.push({
+        day: v.day, stage: v.stageIdx,
+        date: formValue('observation', 'תאריך', 'היום'),
+        context: formValue('observation', 'הקשר', 'מפגש פרטני'),
+        levels: state.rubric.slice(),
+        note: formValue('observation', 'הערה', '')
+      });
+      clearForms('observation/');
       set({ screen: 'admin' }, { top: true });
-      toast('התצפית נשמרה בתיק העובד');
+      toast('התצפית נשמרה בתיק של ' + v.first);
     },
 
     saveMeeting: function () {
+      var v = derive();
+      state.records.meetings.push({
+        day: v.day, stage: v.stageIdx,
+        when: formValue('stageMeeting', 'מועד', 'יום ג׳ · 10:00'),
+        where: formValue('stageMeeting', 'איפה', 'פנים אל פנים'),
+        takeaway: formValue('stageMeeting', 'מה נלקח', '')
+      });
+      clearForms('stageMeeting/');
       set({ screen: 'admin' }, { top: true });
-      toast('סיכום השיחה נשלח לעובד/ת');
+      toast('סיכום השיחה נשלח ל' + v.first);
     },
 
     sendFeedback: function () {
+      var v = derive();
+      var written = formsFor('managerTest/' + v.name + '/' + v.toMark.id + '|');
+      if (!written.length) { toast('אין עדיין מה לשלוח — כתוב/כתבי משוב לפחות לשאלה אחת'); return; }
+      state.feedback[v.toMark.id] = { day: v.day, by: MANAGER, notes: written };
+      clearForms('managerTest/' + v.name + '/' + v.toMark.id + '|');
       set({ screen: 'admin' }, { top: true });
-      toast('המשוב נשלח · העובד/ת יקבל/תקבל התראה');
+      toast('המשוב נשלח · ' + v.first + ' יקבל/תקבל התראה');
     },
 
     saveNote: function () {
+      var v = derive();
+      var text = formValue('fileReview', 'שורה-שתיים', '');
+      if (!text.trim()) { toast('אין מה לשמור — ההערה ריקה'); return; }
+      state.records.notes.push({ day: v.day, by: MANAGER, text: text });
+      clearForms('fileReview/');
       set({ screen: 'admin' }, { top: true });
       toast('הערת הסיכום נשמרה בתיק');
     },
@@ -1636,6 +1809,92 @@
 
     toast: function (arg) { toast(arg); }
   };
+
+  /* ------------------------------------------------------------ form state
+
+     Every field on every screen is persisted without each screen having to
+     opt in. After a render, each input/select/textarea is given a stable key
+     built from the screen, the instance it belongs to (which chapter's test,
+     whose file) and the field's own label — so the same question keeps its
+     answer, and the same question on a different chapter does not collide.
+     Values are written back on input, which never re-renders, so typing is
+     never interrupted. */
+
+  function instanceOf(v) {
+    switch (v.screen) {
+      case 'test': case 'lesson': return v.current.id;
+      case 'review': return v.reviewChapter.id;
+      case 'managerTest': return v.name + '/' + v.toMark.id;
+      case 'observation': case 'stageMeeting': case 'fileReview': return v.name + '/' + v.stageIdx;
+      default: return '';
+    }
+  }
+
+  function labelOf(el) {
+    var lab = el.closest('label');
+    var text = '';
+    if (lab) {
+      // The label's own words only. Reading textContent directly would sweep
+      // in whatever is typed into the field, and the key would then change on
+      // every keystroke — orphaning what was already saved.
+      var copy = lab.cloneNode(true);
+      var controls = copy.querySelectorAll('input, select, textarea');
+      for (var i = 0; i < controls.length; i++) controls[i].remove();
+      text = (copy.textContent || '').trim();
+    }
+    if (!text) {
+      var q = el.closest('.qa, .card, .stack');
+      var qt = q && q.querySelector('.qtext, .label');
+      if (qt) text = qt.textContent.trim();
+    }
+    if (!text) text = el.getAttribute('placeholder') || el.getAttribute('aria-label') || el.tagName;
+    return text.replace(/\s+/g, ' ').slice(0, 60);
+  }
+
+  function fieldKey(v, el, seen) {
+    var base = v.screen + '/' + instanceOf(v) + '|' + labelOf(el);
+    seen[base] = (seen[base] || 0) + 1;
+    return base + '#' + seen[base];
+  }
+
+  function bindForms(v) {
+    var seen = {};
+    var fields = root.querySelectorAll('input, select, textarea');
+    for (var i = 0; i < fields.length; i++) {
+      var el = fields[i];
+      if (el.getAttribute('data-bind')) continue;      // handled separately (the name field)
+      if (el.closest('.demobar')) continue;
+      var key = fieldKey(v, el, seen);
+      el.setAttribute('data-field', key);
+      if (!(key in state.forms)) continue;
+      var saved = state.forms[key];
+      if (el.type === 'checkbox') el.checked = !!saved;
+      else if (saved !== '' && saved != null) el.value = saved;
+    }
+  }
+
+  /* Reads a saved field by screen and a fragment of its label. */
+  function formValue(screenName, labelFragment, fallback) {
+    for (var k in state.forms) {
+      if (k.indexOf(screenName + '/') !== 0) continue;
+      if (k.indexOf(labelFragment) === -1) continue;
+      var val = state.forms[k];
+      if (val !== '' && val != null) return val;
+    }
+    return fallback === undefined ? '' : fallback;
+  }
+
+  /* All saved answers for one screen instance, in the order they appear. */
+  function formsFor(prefix) {
+    return Object.keys(state.forms)
+      .filter(function (k) { return k.indexOf(prefix) === 0; })
+      .map(function (k) { return { key: k, label: k.split('|')[1].replace(/#\d+$/, ''), value: state.forms[k] }; })
+      .filter(function (e) { return String(e.value).trim() !== ''; });
+  }
+
+  function clearForms(prefix) {
+    Object.keys(state.forms).forEach(function (k) { if (k.indexOf(prefix) === 0) delete state.forms[k]; });
+  }
 
   /* ----------------------------------------------------------------- toast */
 
@@ -1673,6 +1932,7 @@
       '</div></div>';
 
     root.innerHTML = html;
+    bindForms(v);
 
     if (opts.top && typeof window !== 'undefined') window.scrollTo(0, 0);
     document.title = (v.titles[v.screen] ? v.titles[v.screen] + ' · ' : '') + 'מכון פוירשטיין · מערכת הלמידה';
@@ -1702,15 +1962,22 @@
     }
   });
 
-  /* Bound inputs update state without re-rendering (so focus is never lost). */
-  document.addEventListener('input', function (e) {
+  /* Inputs write straight to state without re-rendering, so typing is never
+     interrupted and nothing is lost to a refresh. */
+  function captureField(e) {
     var el = e.target;
-    if (!el.getAttribute) return;
-    var key = el.getAttribute('data-bind');
+    if (!el || !el.getAttribute) return;
+
+    var bound = el.getAttribute('data-bind');
+    if (bound) { state[bound] = el.value; save(); return; }
+
+    var key = el.getAttribute('data-field');
     if (!key) return;
-    state[key] = el.value;
+    state.forms[key] = el.type === 'checkbox' ? el.checked : el.value;
     save();
-  });
+  }
+  document.addEventListener('input', captureField);
+  document.addEventListener('change', captureField);
 
   var resizeTimer = null;
   window.addEventListener('resize', function () {
