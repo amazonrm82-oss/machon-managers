@@ -45,6 +45,9 @@
     // null means "the institute's original programme"; the builder clones it
     // on the first edit so the default is never mutated.
     curriculum: null,
+    editRef: 's:0:0',
+    sessions: null,
+    assets: null,
     libTopic: 'שיקום קוגניטיבי',
     libSort: 'used',
     scheduleFilter: 'all',
@@ -163,8 +166,38 @@
     practiceTarget: 60,
     ceTarget: 10,
     finalQuestions: 12,
-    chapterQuestions: 4
+    chapterQuestions: 4,
+    /* Used for any chapter whose own bank is still empty, so the system works
+       from day one and the coordinator can replace it chapter by chapter. */
+    defaultBank: [
+      'תאר/י רגע מהשבוע האחרון שבו הפרק הזה שינה משהו במה שעשית — או במה שהיית עושה.',
+      'בחר/י מושג אחד מהפרק והסבר/י אותו למטופל או להורה — במילים שלהם.',
+      'מטופל לא מתקדם אחרי שלושה מפגשים. מה תבדוק/י קודם, ומה תשנה/י?',
+      'איזו שאלה נשארה לך פתוחה?'
+    ],
+    finalBank: [
+      'בחר/י שלושה קריטריוני תיווך והראה/י איך הם הופיעו — או נעדרו — במפגש אמיתי אחד.',
+      'מה ההבדל בין הערכה דינמית להערכה סטטית, ולמה זה משנה למטופל שלך?',
+      'תאר/י מקרה שבו שינית תוכנית טיפול באמצע. מה גרם לשינוי?',
+      'איך את/ה מסביר/ה למשפחה מה זה שינוי מבני, בלי מונחים מקצועיים?'
+    ]
   };
+
+  /* A chapter may be written as a bare title (that is how the institute's
+     original programme is expressed) or as a full record with its content and
+     its question bank. Everything downstream sees the full record. */
+  function asChapter(c) {
+    if (typeof c === 'string') return { title: c, summary: '', minutes: 55, video: '', outline: [], materials: [], questions: [] };
+    return {
+      title: c.title || '',
+      summary: c.summary || '',
+      minutes: Number(c.minutes) || 55,
+      video: c.video || '',
+      outline: Array.isArray(c.outline) ? c.outline : [],
+      materials: Array.isArray(c.materials) ? c.materials : [],
+      questions: Array.isArray(c.questions) ? c.questions : []
+    };
+  }
 
   function curriculum() {
     var c = state.curriculum;
@@ -172,10 +205,68 @@
     return c;
   }
 
+  /* Reads a chapter out of the programme by stage/track and index. */
+  function chapterAt(ref) {
+    var CUR = curriculum();
+    var parts = String(ref).split(':');
+    var list = parts[0] === 't'
+      ? (CUR.tracks[parts[1]] && CUR.tracks[parts[1]].chapters) || []
+      : (CUR.stages[Number(parts[1])] && CUR.stages[Number(parts[1])].chapters) || [];
+    return { list: list, index: Number(parts[2]), chapter: asChapter(list[Number(parts[2])] || '') };
+  }
+
+  /* Turns a chapter into an editable record in place, so content can be
+     attached to a programme that was written as bare titles. */
+  function chapterFor(ref) {
+    editableCurriculum();
+    var parts = String(ref).split(':');
+    var c = state.curriculum;
+    var list = parts[0] === 't' ? c.tracks[parts[1]].chapters : c.stages[Number(parts[1])].chapters;
+    var i = Number(parts[2]);
+    if (typeof list[i] === 'string') list[i] = asChapter(list[i]);
+    if (!list[i]) list[i] = asChapter('');
+    return list[i];
+  }
+
   /* A working copy to edit, cloned from the default the first time. */
   function editableCurriculum() {
     if (!state.curriculum) state.curriculum = JSON.parse(JSON.stringify(DEFAULT_CURRICULUM));
-    return state.curriculum;
+    var c = state.curriculum;
+    // Normalise once, so every path the editor writes to is the same shape.
+    c.stages.forEach(function (st) {
+      st.chapters = (st.chapters || []).map(asChapter);
+    });
+    Object.keys(c.tracks).forEach(function (k) {
+      c.tracks[k].chapters = (c.tracks[k].chapters || []).map(asChapter);
+    });
+    return c;
+  }
+
+  /* The enrichment schedule and the knowledge base, as the institute's
+     starting content. Both are editable; `state.sessions` / `state.assets`
+     replace these once the coordinator touches them. */
+  var DEFAULT_SESSIONS = [
+    { id: 's1', month: 'ספטמבר', day: '14', dow: 'יום א׳', live: true, dept: 'head', registered: true, recorded: false,
+      when: '16:00–17:30 · Zoom', title: 'קשב לאחר פגיעת ראש — מהקליניקה לשגרה',
+      who: 'ד״ר יעל אברמסון · מרצה חיצונית', hours: 1.5, link: '' },
+    { id: 's2', month: 'ספטמבר', day: '7', dow: 'יום א׳', dept: 'all', registered: true, recorded: true,
+      when: 'הסתיים · הקלטה זמינה', title: 'מקרה מהשדה: שיקום קוגניטיבי אחרי אירוע מוחי בגיל צעיר',
+      who: 'אבי כהן · שיתוף ידע פנימי · ירושלים', hours: 2, link: '' },
+    { id: 's3', month: 'ספטמבר', day: '28', dow: 'יום א׳', dept: 'ptsd', registered: false, recorded: false,
+      when: '16:00–17:00 · Zoom', title: 'טיפול מיודע-טראומה: מה משתנה בחדר',
+      who: 'צוות אגף פוסט-טראומה · מומלץ לשני האגפים', hours: 1, link: '' },
+    { id: 's4', month: 'אוקטובר', day: '12', dow: 'יום ב׳', dept: 'all', registered: false, recorded: false,
+      when: '09:30–13:00 · תל אביב', title: 'סדנת מכשירי העשרה אינסטרומנטלית — עבודה בזוגות',
+      who: 'צוות ההדרכה · סדנה פרונטלית', hours: 3.5, link: '' },
+    { id: 's5', month: 'אוקטובר', day: '26', dow: 'יום ב׳', dept: 'all', registered: false, recorded: false,
+      when: '16:00–17:00 · Zoom · הרצאת רענון שנתית', title: 'רענון שנתי: עדכוני נהלים, פרטיות וחידושים מקצועיים',
+      who: 'רכז הדרכה · עם שאלון קצר בסיום · תנאי חידוש התעודה', hours: 1, link: '' }
+  ];
+
+  function sessions() { return Array.isArray(state.sessions) ? state.sessions : DEFAULT_SESSIONS; }
+  function editableSessions() {
+    if (!Array.isArray(state.sessions)) state.sessions = JSON.parse(JSON.stringify(DEFAULT_SESSIONS));
+    return state.sessions;
   }
 
   var TOPICS = [
@@ -214,7 +305,29 @@
     }
   ];
 
+  /* Each learner gets a different slice of the bank, but always the SAME
+     slice — a reshuffle on every render would orphan answers already saved
+     against the previous questions. */
+  function drawQuestions(bank, count, seedText) {
+    if (!bank || !bank.length) return [];
+    var seed = 0;
+    for (var i = 0; i < seedText.length; i++) seed = (seed * 31 + seedText.charCodeAt(i)) >>> 0;
+    var pool = bank.slice();
+    var out = [];
+    while (pool.length && out.length < count) {
+      seed = (seed * 1103515245 + 12345) >>> 0;
+      out.push(pool.splice(seed % pool.length, 1)[0]);
+    }
+    return out;
+  }
+
   /* ------------------------------------------------------------ view model */
+
+  function assets() { return Array.isArray(state.assets) ? state.assets : ASSETS; }
+  function editableAssets() {
+    if (!Array.isArray(state.assets)) state.assets = JSON.parse(JSON.stringify(ASSETS));
+    return state.assets;
+  }
 
   function derive() {
     var lang = state.lang;
@@ -257,10 +370,15 @@
     var stageDefs = CUR.stages;
     var trackKey = isHead ? 'head' : 'ptsd';
     var chaptersOf = function (st) { return st.byTrack ? (CUR.tracks[trackKey].chapters || []) : (st.chapters || []); };
+    var refOf = function (stageIndex, i) {
+      return stageDefs[stageIndex].byTrack ? 't:' + trackKey + ':' + i : 's:' + stageIndex + ':' + i;
+    };
     var otherTrackKey = isHead ? 'ptsd' : 'head';
 
     function mk(list, no) {
-      return list.map(function (title, i) {
+      return list.map(function (raw, i) {
+        var content = asChapter(raw);
+        var title = content.title;
         var st = 'locked';
         if (done || no < stageIdx) {
           st = (!done && no === stageIdx - 1 && i === list.length - 1) ? 'submitted' : 'done';
@@ -270,6 +388,7 @@
         var notes = st === 'done' ? (i % 2 === 0 ? 2 : 0) : 0;
         return {
           id: no + '.' + (i + 1), title: title, no: no, status: st,
+          content: content, ref: refOf(no - 1, i),
           done: st === 'done', submitted: st === 'submitted',
           current: st === 'current', locked: st === 'locked',
           hasNotes: notes > 0, notes: notes,
@@ -287,8 +406,8 @@
     var c1 = perStage[0] || [];
     var chapters = perStage.reduce(function (a, b) { return a.concat(b); }, []);
     var totalChapters = chapters.length;
-    var bonusList = (CUR.tracks[otherTrackKey].chapters || []).map(function (title, i) {
-      return { id: 'ב.' + (i + 1), title: title };
+    var bonusList = (CUR.tracks[otherTrackKey].chapters || []).map(function (raw, i) {
+      return { id: 'ב.' + (i + 1), title: asChapter(raw).title };
     });
 
     function stState(no) { return done || no < stageIdx ? 'done' : no === stageIdx ? 'active' : 'locked'; }
@@ -413,7 +532,7 @@
       review: 'משוב מנהל', final: 'מבחן מסכם', file: T.file, practiceNew: 'רשומת פרקטיקה',
       notifications: T.notif, search: 'חיפוש', schedule: T.schedule, session: 'דף שיעור',
       sessionAfter: 'דף שיעור', library: T.library, upload: 'העלאה למאגר', asset: 'נכס ידע',
-      admin: T.admin, curriculum: 'תוכנית הלימודים', managerTest: 'בדיקת מבחן', observation: 'תצפית שדה',
+      admin: T.admin, curriculum: 'תוכנית הלימודים', chapterEdit: 'תוכן הפרק', sessionsEdit: 'ניהול השיעורים', libraryEdit: 'ניהול המאגר', managerTest: 'בדיקת מבחן', observation: 'תצפית שדה',
       stageMeeting: 'שיחת סיכום שלב', fileReview: 'סקירת תיק', coordinator: 'רכז הדרכה'
     };
 
@@ -470,7 +589,7 @@
     file: ['file', 'practiceNew'],
     schedule: ['schedule', 'session', 'sessionAfter'],
     library: ['library', 'upload', 'asset'],
-    admin: ['admin', 'managerTest', 'observation', 'stageMeeting', 'fileReview', 'coordinator', 'curriculum']
+    admin: ['admin', 'managerTest', 'observation', 'stageMeeting', 'fileReview', 'coordinator', 'curriculum', 'chapterEdit', 'sessionsEdit', 'libraryEdit']
   };
 
   function areaOf(screen) {
@@ -777,34 +896,43 @@
 
   /* 3 — פרק */
   screens.lesson = function (v) {
+    var content = v.current.content;
+    var outline = content.outline.length ? content.outline : [
+      'המושגים המרכזיים ומאיפה הם באים',
+      'שני קטעי וידאו מהשדה לניתוח',
+      'איך זה נראה במפגש אמיתי — ומה עוצרים',
+      'דף עבודה לרשומת הפרקטיקה הבאה'
+    ];
     return '<div class="page narrow">' +
       back('home', 'חזרה למסלול שלי') +
       '<div class="stack s8">' +
       '<div class="kicker accent">' + esc(v.currentStage) + ' · פרק ' + esc(v.current.id) + '</div>' +
       '<h1 class="h1">' + esc(v.current.title) + '</h1>' +
-      '<div class="small muted">כ-55 דקות · וידאו עם כתוביות · בסופו מבחן פרק ללא ציון</div></div>' +
+      (content.summary ? '<p class="lead">' + esc(content.summary) + '</p>' : '') +
+      '<div class="small muted">כ-' + content.minutes + ' דקות · וידאו עם כתוביות · בסופו מבחן פרק ללא ציון</div></div>' +
       '<div class="video"><button type="button" class="play" aria-label="הפעלת הווידאו של הפרק" data-act="toast" data-arg="הווידאו יתנגן במערכת החיה">' + icon('fill:play') + '</button>' +
       '<div class="controls"><span class="track"><i style="width:22%"></i></span>' +
       '<span>12:10 מתוך 55:00</span>' + icon('closed-captioning') + icon('download-simple') + '</div></div>' +
       '<div class="card pad stack s14">' +
       '<div class="h4">מה בפרק</div>' +
       '<div class="stack" style="font-size:14px;color:var(--color-neutral-800)">' +
-      [['01', 'המושגים המרכזיים ומאיפה הם באים'],
-      ['02', 'שני קטעי וידאו מהשדה לניתוח'],
-      ['03', 'איך זה נראה במפגש אמיתי — ומה עוצרים'],
-      ['04', 'דף עבודה לרשומת הפרקטיקה הבאה']].map(function (r) {
-        return '<div style="display:flex;gap:10px"><span style="color:var(--color-accent-700);font-family:var(--font-heading)">' + r[0] + '</span><span>' + esc(r[1]) + '</span></div>';
+      outline.map(function (line, i) {
+        var no = (i < 9 ? '0' : '') + (i + 1);
+        return '<div style="display:flex;gap:10px"><span style="color:var(--color-accent-700);font-family:var(--font-heading)">' + no + '</span><span>' + esc(line) + '</span></div>';
       }).join('') +
       '</div>' +
       '<div class="row" style="border-top:1px solid var(--color-neutral-300);padding-top:14px;gap:16px">' +
-      '<button type="button" class="btn-link" data-act="toast" data-arg="הקובץ יורד במערכת החיה">' + icon('file-pdf') + 'מצגת הפרק</button>' +
-      '<button type="button" class="btn-link" data-act="toast" data-arg="הקובץ יורד במערכת החיה">' + icon('file-doc') + 'דף עבודה</button>' +
+      content.materials.filter(function (m) { return m.name; }).map(function (m) {
+        return m.url
+          ? '<a class="btn-link" href="' + esc(m.url) + '" target="_blank" rel="noopener">' + icon('file-doc') + esc(m.name) + '</a>'
+          : '<span class="small muted">' + icon('file-doc') + ' ' + esc(m.name) + '</span>';
+      }).join('') +
       '<button type="button" class="btn-link" data-act="go" data-arg="library">' + icon('books') + 'הנושא במאגר הידע</button>' +
       '</div></div>' +
       '<div class="card tintbg pad row" style="gap:20px">' +
       '<div class="iconwrap" style="width:46px;height:46px;background:var(--color-accent-700);color:var(--color-neutral-100);font-size:24px">' + icon('chat-circle-text') + '</div>' +
       '<div class="stack s6" style="flex:1;min-width:220px">' +
-      '<div class="h4" style="color:var(--color-accent-800)">מבחן הפרק — 4 שאלות פתוחות מהמחסן</div>' +
+      '<div class="h4" style="color:var(--color-accent-800)">מבחן הפרק — ' + v.chapterQuestions + ' שאלות פתוחות מהמחסן</div>' +
       '<div style="font-size:14px;line-height:1.6;color:var(--color-accent-700)">אין ציון. כל עובד מקבל שאלות שונות. ' + esc(v.managerName) + ' קורא/ת ומגיב/ה לכל שאלה — והפרק הבא נפתח מיד עם השליחה.</div></div>' +
       '<button type="button" class="btn btn-primary btn-lg" data-act="go" data-arg="test">למבחן הפרק</button>' +
       '</div></div>';
@@ -812,19 +940,35 @@
 
   /* 4 — מבחן פרק */
   screens.test = function (v) {
-    var qs = [
-      [4, 'תאר/י רגע מהשבוע האחרון שבו הפרק הזה שינה משהו במה שעשית — או במה שהיית עושה.'],
-      [4, 'בחר/י מושג אחד מהפרק והסבר/י אותו למטופל או להורה — במילים שלהם.'],
-      [4, 'מטופל לא מתקדם אחרי שלושה מפגשים. מה תבדוק/י קודם, ומה תשנה/י?'],
-      [3, 'איזו שאלה נשארה לך פתוחה? ' + v.managerName + ' יענה/תענה עליה במשוב.']
-    ];
+    var own = v.current.content.questions.filter(function (q) { return String(q).trim(); });
+    var usingDefault = !own.length;
+    var bank = usingDefault
+      ? (curriculum().defaultBank || DEFAULT_CURRICULUM.defaultBank).filter(function (q) { return String(q).trim(); })
+      : own;
+    var drawn = drawQuestions(bank, v.chapterQuestions, (currentUser && currentUser.id || 'me') + v.current.id);
+
+    // Nothing authored yet: the coordinator has not filled this chapter's bank.
+    if (!drawn.length) {
+      return '<div class="page read">' +
+        back('lesson', 'חזרה לפרק') +
+        '<div class="stack s8">' +
+        '<div class="kicker accent">מבחן פרק · ' + esc(v.current.id + ' ' + v.current.title) + '</div>' +
+        '<h1 class="h1">המבחן עדיין לא נפתח</h1></div>' +
+        '<div class="notice quiet">' + icon('hourglass-medium') +
+        '<span>לפרק הזה עוד לא הוזנו שאלות. רכז ההדרכה מזין אותן במסך תוכנית הלימודים, ואז המבחן ייפתח כאן.</span></div>' +
+        '<button type="button" class="btn btn-quiet" style="align-self:flex-start" data-act="go" data-arg="home">חזרה למסלול</button>' +
+        '</div>';
+    }
+
+    var qs = drawn.map(function (q, i) { return [i === drawn.length - 1 ? 3 : 4, q]; });
     return '<div class="page read">' +
       back('lesson', 'חזרה לפרק') +
       '<div class="stack s8">' +
       '<div class="row tight">' +
       '<span class="kicker accent">מבחן פרק · ' + esc(v.current.id + ' ' + v.current.title) + '</span>' +
-      '<span class="tag outline">גרסה אישית · 4 מתוך 18 שאלות במחסן</span></div>' +
-      '<h1 class="h1">ארבע שאלות, בלי ציון</h1>' +
+      '<span class="tag outline">גרסה אישית · ' + drawn.length + ' מתוך ' + bank.length + ' שאלות במחסן</span>' +
+      (usingDefault ? '<span class="tag neutral">מחסן כללי</span>' : '') + '</div>' +
+      '<h1 class="h1">' + drawn.length + ' שאלות, בלי ציון</h1>' +
       '<p class="lead">כתוב/כתבי מהניסיון והמחשבה שלך — אין תשובה אחת נכונה. אין מגבלת זמן. ' + esc(v.managerName) + ' יקרא/תקרא ויגיב/תגיב לכל שאלה, והכל נשמר בתיק שלך.</p></div>' +
       '<div class="notice quiet">' + icon('shield-check', 'ok') +
       '<span>הצהרת פרטיות: בתשובות אין שמות או פרטים מזהים של מטופלים.</span></div>' +
@@ -923,29 +1067,32 @@
 
   /* 6 — מבחן מסכם */
   screens.final = function (v) {
+    var CUR = curriculum();
+    var finalBank = (CUR.finalBank || []).filter(function (q) { return String(q).trim(); });
+    var finalDrawn = drawQuestions(finalBank, v.finalQuestions, (currentUser && currentUser.id || 'me') + 'final');
     return '<div class="page read">' +
       back('file', 'חזרה לתיק שלי') +
       '<div class="stack s8">' +
       '<div class="row tight"><span class="kicker accent">מבחן מסכם · שלושת השלבים</span>' +
-      '<span class="tag outline">גרסה אישית · ' + v.finalQuestions + ' מתוך 60 שאלות במחסן</span></div>' +
-      '<h1 class="h1">' + v.finalQuestions + ' שאלות פתוחות, בלי ציון</h1>' +
+      '<span class="tag outline">גרסה אישית · ' + finalDrawn.length + ' מתוך ' + finalBank.length + ' שאלות במחסן</span></div>' +
+      '<h1 class="h1">' + (finalDrawn.length || v.finalQuestions) + ' שאלות פתוחות, בלי ציון</h1>' +
       '<p class="lead">ארבע שאלות מכל שלב. ' + esc(v.managerName) + ' קורא/ת ומגיב/ה כמו במבחני הפרקים. ההגשה היא אחד משלושת התנאים לתעודה — יחד עם ' + v.totalChapters + ' מבחני פרק עם משוב ו-' + v.practiceTarget + ' שעות פרקטיקה מאושרות.</p></div>' +
       (v.done
         ? '<div class="notice">' + icon('fill:check-circle') +
         '<span>הוגש ביום 88 · המשוב של ' + esc(v.managerName) + ' ניתן ביום 90 · 12 שאלות, 5 הערות</span></div>'
         : '') +
       '<div class="stack s12">' +
-      '<div class="kicker">שלב 1 · שיטת פוירשטיין</div>' +
-      '<div class="card pad stack s12"><div class="qline"><span class="qno">1</span>' +
-      '<span class="qtext">בחר/י שלושה קריטריוני תיווך והראה/י איך הם הופיעו — או נעדרו — במפגש אמיתי אחד.</span></div>' +
-      textarea(4, 'התשובה שלך…', '', 'שאלה 1: בחר/י שלושה קריטריוני תיווך והראה/י איך הם הופיעו — או נעדרו — במפגש אמיתי אחד') + '</div>' +
-      '<div class="card pad stack s12"><div class="qline"><span class="qno">2</span>' +
-      '<span class="qtext">מה ההבדל בין הערכה דינמית להערכה סטטית, ולמה זה משנה למטופל שלך?</span></div>' +
-      textarea(4, 'התשובה שלך…', '', 'שאלה 2: מה ההבדל בין הערכה דינמית להערכה סטטית') + '</div>' +
-      '<div class="small muted" style="padding:4px 0">שאלות 3–4 · שלב 1 · ואז 4 שאלות בשיקום קוגניטיבי ו-4 בהכשרת האגף</div>' +
+      (finalDrawn.length
+        ? finalDrawn.map(function (q, i) {
+            return '<div class="card pad stack s12"><div class="qline"><span class="qno">' + (i + 1) + '</span>' +
+              '<span class="qtext">' + esc(q) + '</span></div>' +
+              textarea(4, 'התשובה שלך…', '', 'שאלה ' + (i + 1) + ': ' + q) + '</div>';
+          }).join('')
+        : '<div class="notice quiet">' + icon('hourglass-medium') +
+          '<span>מחסן השאלות של המבחן המסכם עדיין ריק. רכז ההדרכה מזין אותו במסך תוכנית הלימודים.</span></div>') +
       '</div>' +
       '<div class="row" style="gap:14px">' +
-      (v.notDone
+      (v.notDone && finalDrawn.length
         ? '<button type="button" class="btn btn-primary btn-lg" data-act="submitFinal">' + icon('paper-plane-tilt') + '<span>הגשה ל' + esc(v.managerName) + '</span></button>'
         : '') +
       '<button type="button" class="btn btn-quiet btn-lg" data-act="toast" data-arg="הטיוטה נשמרת מעצמה — אפשר לסגור ולחזור">שמירת טיוטה</button>' +
@@ -1107,76 +1254,63 @@
 
   /* 11 — לוח שיעורים */
   screens.schedule = function (v) {
-    var sessions = [
-      {
-        month: 'ספטמבר', day: '14', dow: 'יום א׳', live: true, act: 'session', dept: 'head', registered: true, recorded: false,
-        when: '16:00–17:30 · Zoom', title: 'קשב לאחר פגיעת ראש — מהקליניקה לשגרה',
-        who: 'ד״ר יעל אברמסון · מרצה חיצונית · 1.5 שעות המשך', cta: 'הצטרפות', ctaStyle: 'solid'
-      },
-      {
-        month: 'ספטמבר', day: '7', dow: 'יום א׳', act: 'sessionAfter', dept: 'all', registered: true, recorded: true,
-        when: 'הסתיים · הקלטה זמינה · 2 שעות המשך', title: 'מקרה מהשדה: שיקום קוגניטיבי אחרי אירוע מוחי בגיל צעיר',
-        who: 'אבי כהן · שיתוף ידע פנימי · ירושלים', cta: 'צפייה + שאלון', ctaStyle: 'chip'
-      },
-      {
-        month: 'ספטמבר', day: '28', dow: 'יום א׳', dept: 'ptsd', registered: false, recorded: false,
-        when: '16:00–17:00 · Zoom · 1 שעת המשך', title: 'טיפול מיודע-טראומה: מה משתנה בחדר',
-        who: 'צוות אגף פוסט-טראומה · מומלץ לשני האגפים', cta: 'הרשמה', ctaStyle: 'outline'
-      },
-      {
-        month: 'אוקטובר', day: '12', dow: 'יום ב׳', dept: 'all', registered: false, recorded: false,
-        when: '09:30–13:00 · תל אביב · 3.5 שעות המשך', title: 'סדנת מכשירי העשרה אינסטרומנטלית — עבודה בזוגות',
-        who: 'צוות ההדרכה · סדנה פרונטלית', cta: 'הרשמה', ctaStyle: 'outline'
-      },
-      {
-        month: 'אוקטובר', day: '26', dow: 'יום ב׳', dept: 'all', registered: false, recorded: false,
-        when: '16:00–17:00 · Zoom · הרצאת רענון שנתית · חובה למוסמכים', title: 'רענון שנתי: עדכוני נהלים, פרטיות וחידושים מקצועיים',
-        who: 'רכז הדרכה · עם שאלון קצר בסיום · תנאי חידוש התעודה', cta: 'הרשמה', ctaStyle: 'outline'
-      }
-    ];
+    var list = sessions().map(function (ss) {
+      return {
+        id: ss.id, month: ss.month, day: ss.day, dow: ss.dow, live: !!ss.live,
+        dept: ss.dept || 'all', registered: !!ss.registered, recorded: !!ss.recorded,
+        when: ss.when, title: ss.title, who: ss.who,
+        hours: Number(ss.hours) || 0, link: ss.link || '',
+        act: ss.live ? 'session' : ss.recorded ? 'sessionAfter' : ''
+      };
+    });
 
     var f = state.scheduleFilter;
-    var shown = sessions.filter(function (s) {
+    var shown = list.filter(function (ss) {
       if (f === 'all') return true;
-      if (f === 'dept') return s.dept === v.dept || s.dept === 'all';
-      if (f === 'registered') return s.registered;
-      if (f === 'recorded') return s.recorded;
+      if (f === 'dept') return ss.dept === v.dept || ss.dept === 'all';
+      if (f === 'registered') return ss.registered;
+      if (f === 'recorded') return ss.recorded;
       return true;
     });
 
     var filters = [['all', 'הכל'], ['dept', v.deptName], ['registered', 'נרשמתי'], ['recorded', 'הוקלטו']];
+    var months = [];
+    shown.forEach(function (ss) { if (months.indexOf(ss.month) === -1) months.push(ss.month); });
 
     var h = '<div class="page" style="gap:22px">' +
       '<div class="row between" style="align-items:flex-end;gap:16px">' +
-      '<div class="stack s6"><h1 class="h1">שיעורי העשרה · תשפ״ז</h1>' +
+      '<div class="stack s6"><h1 class="h1">שיעורי העשרה</h1>' +
       '<div class="small muted">כל שיעור נזקף כשעות המשך אחרי נוכחות + שאלון 3 שאלות · שעות ההמשך שלך: ' + v.ceHours + ' מתוך ' + v.ceTarget + '</div></div>' +
       '<div class="chips">' + filters.map(function (x) {
         return '<button type="button" class="chip" data-act="scheduleFilter" data-arg="' + x[0] + '" aria-pressed="' + (f === x[0]) + '">' + esc(x[1]) + '</button>';
       }).join('') + '</div></div>';
 
-    ['ספטמבר', 'אוקטובר'].forEach(function (month) {
-      var list = shown.filter(function (s) { return s.month === month; });
-      if (!list.length) return;
+    months.forEach(function (month) {
+      var inMonth = shown.filter(function (ss) { return ss.month === month; });
       h += '<div class="stack"><div class="kicker">' + esc(month) + '</div>' +
-        list.map(function (s) {
-          var inner = '<span class="datechip' + (s.live ? '' : ' quiet') + '"><span class="d">' + s.day + '</span><span class="m">' + esc(s.dow) + '</span></span>' +
+        inMonth.map(function (ss) {
+          var inner = '<span class="datechip' + (ss.live ? '' : ' quiet') + '"><span class="d">' + esc(ss.day) + '</span><span class="m">' + esc(ss.dow) + '</span></span>' +
             '<span class="body">' +
-            (s.live
-              ? '<span class="row tight"><span class="livedot"></span><span class="tiny" style="color:var(--color-live)">משודר עכשיו</span><span class="when">' + esc(s.when) + '</span></span>'
-              : '<span class="when">' + esc(s.when) + '</span>') +
-            '<span class="name">' + esc(s.title) + '</span><span class="sub">' + esc(s.who) + '</span></span>';
-          var cta = s.ctaStyle === 'solid'
-            ? '<span class="tag solid" style="padding:10px 18px;border-radius:var(--radius-md)">' + esc(s.cta) + '</span>'
-            : s.ctaStyle === 'chip'
-              ? '<span class="chip on">' + esc(s.cta) + '</span>'
-              : '<button type="button" class="btn btn-outline btn-sm" data-act="toast" data-arg="נרשמת · תזכורת תישלח יום לפני">' + esc(s.cta) + '</button>';
-          return s.act
-            ? '<button type="button" class="card sessionitem' + (s.live ? ' ring-accent' : '') + '" data-act="go" data-arg="' + s.act + '">' + inner + cta + '</button>'
+            (ss.live
+              ? '<span class="row tight"><span class="livedot"></span><span class="tiny" style="color:var(--color-live)">משודר עכשיו</span><span class="when">' + esc(ss.when) + '</span></span>'
+              : '<span class="when">' + esc(ss.when) + (ss.hours ? ' · ' + ss.hours + ' שעות המשך' : '') + '</span>') +
+            '<span class="name">' + esc(ss.title) + '</span><span class="sub">' + esc(ss.who) + '</span></span>';
+          var cta = ss.live
+            ? '<span class="tag solid" style="padding:10px 18px;border-radius:var(--radius-md)">הצטרפות</span>'
+            : ss.recorded
+              ? '<span class="chip on">צפייה + שאלון</span>'
+              : '<button type="button" class="btn btn-outline btn-sm" data-act="toast" data-arg="נרשמת · תזכורת תישלח יום לפני">הרשמה</button>';
+          return ss.act
+            ? '<button type="button" class="card sessionitem' + (ss.live ? ' ring-accent' : '') + '" data-act="go" data-arg="' + ss.act + '">' + inner + cta + '</button>'
             : '<div class="card sessionitem">' + inner + cta + '</div>';
         }).join('') + '</div>';
     });
 
-    if (!shown.length) h += '<div class="card pad muted">אין שיעורים בסינון הזה.</div>';
+    if (!shown.length) {
+      h += '<div class="card pad stack s8" style="align-items:flex-start">' +
+        '<span class="h4">אין שיעורים להצגה</span>' +
+        '<span class="small muted">' + (list.length ? 'אין שיעורים בסינון הזה.' : 'רכז ההדרכה מזין את לוח השיעורים במסך ניהול השיעורים.') + '</span></div>';
+    }
     return h + '</div>';
   };
 
@@ -1316,7 +1450,7 @@
     var h = '<div class="page" style="gap:22px">' +
       '<div class="row between" style="align-items:flex-end;gap:16px">' +
       '<div class="stack s6"><h1 class="h1">מאגר הידע</h1>' +
-      '<div class="small muted">' + (162 + v.ownAssets.length) + ' נכסים · 12 מומחים · 6 נושאים · העלאה חופשית לכל עובד</div></div>' +
+      '<div class="small muted">' + (assets().length + v.ownAssets.length) + ' נכסים · ' + TOPICS.length + ' נושאים · העלאה חופשית לכל עובד</div></div>' +
       '<button type="button" class="btn btn-primary" data-act="go" data-arg="upload">' + icon('upload-simple') + '<span>העלאת נכס ידע</span></button>' +
       '</div>' +
       '<button type="button" class="searchbtn" style="flex:0 0 auto;width:100%;background:var(--color-neutral-100);box-shadow:var(--ring);border:0;padding:13px 20px;min-height:48px;font-size:15px" data-act="go" data-arg="search">' +
@@ -1328,7 +1462,7 @@
 
     if (state.libTab === 'assets') {
       var topic = TOPICS.filter(function (t) { return t.name === state.libTopic; })[0] || TOPICS[1];
-      var list = ASSETS.slice().sort(function (a, b) {
+      var list = assets().slice().sort(function (a, b) {
         return state.libSort === 'used' ? b.uses - a.uses : a.fresh - b.fresh;
       });
       // Anything this person published sits at the top — it is the newest
@@ -1357,9 +1491,9 @@
             '<span class="title">' + esc(a.title) + '</span>' +
             '<span class="desc">' + esc(a.desc) + '</span>' +
             '<span class="meta">' + esc(a.meta) + '</span>';
-          return a.open
-            ? '<button type="button" class="card assetcard" data-act="go" data-arg="asset">' + body + '</button>'
-            : '<div class="card assetcard">' + body + '</div>';
+          return a.url
+          ? '<a class="card assetcard" href="' + esc(a.url) + '" target="_blank" rel="noopener">' + body + '</a>'
+          : '<button type="button" class="card assetcard" data-act="go" data-arg="asset">' + body + '</button>';
         }).join('') + '</div>';
     }
 
@@ -1703,9 +1837,10 @@
       '<div class="card pad-sm stack">' +
       '<span class="h4">פעולות</span>' +
       '<button type="button" class="btn btn-primary btn-block" style="justify-content:flex-start" data-act="go" data-arg="curriculum">' + icon('graduation-cap') + '<span>בניית תוכנית הלימודים</span></button>' +
-      '<button type="button" class="btn btn-outline btn-block" style="justify-content:flex-start" data-act="toast" data-arg="נפתחה תבנית שיעור חדשה">' + icon('calendar-plus') + '<span>שיבוץ שיעור מתבנית</span></button>' +
+      '<button type="button" class="btn btn-primary btn-block" style="justify-content:flex-start" data-act="go" data-arg="sessionsEdit">' + icon('calendar-plus') + '<span>ניהול השיעורים</span></button>' +
+      '<button type="button" class="btn btn-primary btn-block" style="justify-content:flex-start" data-act="go" data-arg="libraryEdit">' + icon('books') + '<span>ניהול מאגר הידע</span></button>' +
       '<button type="button" class="btn btn-quiet btn-block" style="justify-content:flex-start" data-act="toast" data-arg="הזמנת אורח נשלחה · הרשאה ל-30 יום">' + icon('user-plus') + '<span>הזמנת מרצה חיצוני · אורח 30 יום</span></button>' +
-      '<button type="button" class="btn btn-quiet btn-block" style="justify-content:flex-start" data-act="toast" data-arg="מחסן השאלות · 78 שאלות פעילות">' + icon('database') + '<span>מחסן השאלות · 78 שאלות</span></button>' +
+
       '<button type="button" class="btn btn-quiet btn-block" style="justify-content:flex-start" data-act="print">' + icon('file-arrow-down') + '<span>דוח רבעוני להנהלה</span></button>' +
       '</div></div></div></div>';
   };
@@ -1715,11 +1850,16 @@
     var CUR = curriculum();
     var edited = !!state.curriculum;
 
-    function chapterRow(stageIdx, i, title, count) {
+    function chapterRow(stageIdx, i, title, count, ref, rec) {
+      var filled = (rec.summary || rec.video || (rec.outline || []).length);
+      var qn = (rec.questions || []).length;
       return '<div class="curline">' +
         '<span class="curno">' + (stageIdx + 1) + '.' + (i + 1) + '</span>' +
         '<input class="input" value="' + esc(title) + '" aria-label="שם הפרק"' +
-        ' data-cur="stages.' + stageIdx + '.chapters.' + i + '">' +
+        ' data-cur="stages.' + stageIdx + '.chapters.' + i + '.title">' +
+        '<button type="button" class="btn btn-outline btn-sm chapbtn" data-act="editChapter" data-arg="' + ref + '">' +
+        icon('file-doc') + '<span>' + (filled ? 'תוכן' : 'הוספת תוכן') +
+        (qn ? ' · ' + qn + ' שאלות' : '') + '</span></button>' +
         '<span class="row tight nowrap" style="gap:4px">' +
         '<button type="button" class="iconbtn" aria-label="הזזה למעלה" ' + (i === 0 ? 'disabled ' : '') +
         'data-act="curMove" data-arg="' + stageIdx + ':' + i + ':-1">' + icon('caret-up') + '</button>' +
@@ -1729,11 +1869,14 @@
         icon('x') + '</button></span></div>';
     }
 
-    function trackRow(key, i, title, count) {
+    function trackRow(key, i, title, count, rec) {
+      var qn = (rec.questions || []).length;
       return '<div class="curline">' +
         '<span class="curno">' + (i + 1) + '</span>' +
         '<input class="input" value="' + esc(title) + '" aria-label="שם הפרק"' +
-        ' data-cur="tracks.' + key + '.chapters.' + i + '">' +
+        ' data-cur="tracks.' + key + '.chapters.' + i + '.title">' +
+        '<button type="button" class="btn btn-outline btn-sm chapbtn" data-act="editChapter" data-arg="t:' + key + ':' + i + '">' +
+        icon('file-doc') + '<span>תוכן' + (qn ? ' · ' + qn + ' שאלות' : '') + '</span></button>' +
         '<span class="row tight nowrap" style="gap:4px">' +
         '<button type="button" class="iconbtn" aria-label="מחיקת הפרק" data-act="curRemoveTrack" data-arg="' + key + ':' + i + '">' +
         icon('x') + '</button></span></div>';
@@ -1755,7 +1898,7 @@
     // stages
     h += '<div class="stack s16">';
     CUR.stages.forEach(function (st, si) {
-      var list = st.byTrack ? [] : (st.chapters || []);
+      var list = (st.byTrack ? [] : (st.chapters || [])).map(asChapter);
       h += '<div class="card pad stack s12">' +
         '<div class="row between"><span class="kicker">שלב ' + (si + 1) + '</span>' +
         (CUR.stages.length > 1
@@ -1774,7 +1917,7 @@
         h += '<div class="stack s8">' +
           '<span class="small muted">פרקים · ' + list.length + '</span>' +
           (list.length
-            ? list.map(function (t, i) { return chapterRow(si, i, t, list.length); }).join('')
+            ? list.map(function (t, i) { return chapterRow(si, i, t.title, list.length, 's:' + si + ':' + i, t); }).join('')
             : '<div class="small muted">אין פרקים בשלב הזה — עובד יעבור אותו בלי מבחן.</div>') +
           '<button type="button" class="uploadbtn" data-act="curAdd" data-arg="' + si + '">' +
           icon('plus') + '<span>הוספת פרק</span></button></div>';
@@ -1789,14 +1932,14 @@
       '<div class="h2">מסלולי האגפים</div>' +
       ['head', 'ptsd'].map(function (key) {
         var tr = CUR.tracks[key];
-        var list = tr.chapters || [];
+        var list = (tr.chapters || []).map(asChapter);
         return '<div class="card pad stack s12">' +
           '<div class="grid-fields sm">' +
           field('שם האגף', '<input class="input" value="' + esc(tr.name) + '" data-cur="tracks.' + key + '.name">') +
           field('תיאור קצר', '<input class="input" value="' + esc(tr.blurb || '') + '" data-cur="tracks.' + key + '.blurb">') +
           '</div>' +
           '<div class="stack s8"><span class="small muted">פרקים · ' + list.length + '</span>' +
-          list.map(function (t, i) { return trackRow(key, i, t, list.length); }).join('') +
+          list.map(function (t, i) { return trackRow(key, i, t.title, list.length, t); }).join('') +
           '<button type="button" class="uploadbtn" data-act="curAddTrack" data-arg="' + key + '">' +
           icon('plus') + '<span>הוספת פרק</span></button></div></div>';
       }).join('') + '</div>';
@@ -1815,10 +1958,228 @@
       'מבחן מסכם, ו-<strong>' + v.practiceTarget + '</strong> שעות פרקטיקה מאושרות.</span></div>' +
       '</div>';
 
+    // the programme-wide bank, used by any chapter without its own
+    var db = CUR.defaultBank || DEFAULT_CURRICULUM.defaultBank;
+    h += '<div class="card pad stack s12">' +
+      '<div class="stack s6"><span class="h4">מחסן שאלות כללי</span>' +
+      '<span class="small muted">משמש כל פרק שעדיין אין לו שאלות משלו. לפרק עם שאלות משלו — הן גוברות.</span></div>' +
+      db.map(function (q, i) {
+        return '<div class="curline">' +
+          '<span class="curno">' + (i + 1) + '</span>' +
+          '<input class="input" value="' + esc(q) + '" aria-label="שאלה כללית ' + (i + 1) + '" data-cur="defaultBank.' + i + '">' +
+          '<button type="button" class="iconbtn" aria-label="מחיקת השאלה" data-act="curDelDefaultQ" data-arg="' + i + '">' + icon('x') + '</button>' +
+          '</div>';
+      }).join('') +
+      '<button type="button" class="uploadbtn" data-act="curAddDefaultQ">' + icon('plus') + '<span>הוספת שאלה כללית</span></button>' +
+      '</div>';
+
+    // final exam bank
+    var fb = CUR.finalBank || [];
+    h += '<div class="card pad stack s12">' +
+      '<div class="stack s6"><span class="h4">מחסן שאלות · מבחן מסכם</span>' +
+      '<span class="small muted">כל עובד מקבל ' + (CUR.finalQuestions || 12) + ' שאלות מתוך ' + fb.length + ' שבמחסן.</span></div>' +
+      fb.map(function (q, i) {
+        return '<div class="curline">' +
+          '<span class="curno">' + (i + 1) + '</span>' +
+          '<input class="input" value="' + esc(q) + '" aria-label="שאלה ' + (i + 1) + '" data-cur="finalBank.' + i + '">' +
+          '<button type="button" class="iconbtn" aria-label="מחיקת השאלה" data-act="curDelFinalQ" data-arg="' + i + '">' + icon('x') + '</button>' +
+          '</div>';
+      }).join('') +
+      '<button type="button" class="uploadbtn" data-act="curAddFinalQ">' + icon('plus') + '<span>הוספת שאלה</span></button>' +
+      '</div>';
+
     h += '<div class="row"><button type="button" class="btn btn-primary btn-lg" data-act="curDone">' +
       icon('check') + '<span>סיימתי</span></button>' +
       '<span class="tiny muted">השינויים נשמרים תוך כדי עריכה.</span></div>';
 
+    return h + '</div>';
+  };
+
+  /* 24 — תוכן הפרק ומחסן השאלות (רכז הדרכה) */
+  screens.chapterEdit = function (v) {
+    var ref = state.editRef;
+    var found = chapterAt(ref);
+    var c = found.chapter;
+    var where = ref.split(':')[0] === 't'
+      ? 'מסלול ' + curriculum().tracks[ref.split(':')[1]].name
+      : 'שלב ' + (Number(ref.split(':')[1]) + 1);
+    var path = ref.split(':')[0] === 't'
+      ? 'tracks.' + ref.split(':')[1] + '.chapters.' + found.index
+      : 'stages.' + ref.split(':')[1] + '.chapters.' + found.index;
+
+    var h = '<div class="page narrow" style="gap:20px">' +
+      back('curriculum', 'חזרה לתוכנית הלימודים') +
+      '<div class="stack s6">' +
+      '<div class="kicker accent">' + esc(where) + ' · פרק ' + (found.index + 1) + '</div>' +
+      '<h1 class="h1">' + esc(c.title || 'פרק ללא שם') + '</h1>' +
+      '<div class="small muted">מה שנכתב כאן הוא מה שהעובד רואה בפרק, והשאלות הן המחסן שממנו נשלף המבחן.</div></div>' +
+
+      '<div class="card pad stack s14">' +
+      '<span class="h4">השיעור</span>' +
+      field('שם הפרק', '<input class="input" value="' + esc(c.title) + '" data-cur="' + path + '.title">') +
+      field('תיאור קצר — מופיע מתחת לכותרת', textarea(2, 'על מה הפרק', c.summary).replace('class="textarea"', 'class="textarea" data-cur="' + path + '.summary"')) +
+      '<div class="grid-fields sm">' +
+      field('אורך בדקות', '<input class="input" type="number" min="1" value="' + esc(c.minutes) + '" data-cur="' + path + '.minutes">') +
+      field('קישור לווידאו', '<input class="input ltr" placeholder="https://…" value="' + esc(c.video) + '" data-cur="' + path + '.video">') +
+      '</div></div>' +
+
+      '<div class="card pad stack s12">' +
+      '<div class="row between"><span class="h4">מה בפרק</span>' +
+      '<span class="small muted">' + c.outline.length + ' סעיפים</span></div>' +
+      (c.outline.length
+        ? c.outline.map(function (line, i) {
+            return '<div class="curline">' +
+              '<span class="curno">' + (i < 9 ? '0' : '') + (i + 1) + '</span>' +
+              '<input class="input" value="' + esc(line) + '" aria-label="סעיף ' + (i + 1) + '"' +
+              ' data-cur="' + path + '.outline.' + i + '">' +
+              '<button type="button" class="iconbtn" aria-label="מחיקת הסעיף" data-act="chapDelOutline" data-arg="' + i + '">' +
+              icon('x') + '</button></div>';
+          }).join('')
+        : '<div class="small muted">אין עדיין סעיפים.</div>') +
+      '<button type="button" class="uploadbtn" data-act="chapAddOutline">' + icon('plus') + '<span>הוספת סעיף</span></button>' +
+      '</div>' +
+
+      '<div class="card pad stack s12">' +
+      '<div class="row between"><span class="h4">חומרים מצורפים</span>' +
+      '<span class="small muted">' + c.materials.length + ' קבצים</span></div>' +
+      (c.materials.length
+        ? c.materials.map(function (m, i) {
+            return '<div class="curline">' +
+              '<input class="input" value="' + esc(m.name || '') + '" aria-label="שם הקובץ" placeholder="שם"' +
+              ' data-cur="' + path + '.materials.' + i + '.name">' +
+              '<input class="input ltr" value="' + esc(m.url || '') + '" aria-label="קישור" placeholder="https://…"' +
+              ' data-cur="' + path + '.materials.' + i + '.url">' +
+              '<button type="button" class="iconbtn" aria-label="מחיקת הקובץ" data-act="chapDelMaterial" data-arg="' + i + '">' +
+              icon('x') + '</button></div>';
+          }).join('')
+        : '<div class="small muted">אין קבצים מצורפים. אפשר לקשר למצגת או למסמך ב-SharePoint.</div>') +
+      '<button type="button" class="uploadbtn" data-act="chapAddMaterial">' + icon('plus') + '<span>הוספת קובץ</span></button>' +
+      '</div>' +
+
+      '<div class="card pad stack s12">' +
+      '<div class="stack s6"><span class="h4">מחסן השאלות</span>' +
+      '<span class="small muted">כל עובד מקבל ' + v.chapterQuestions + ' שאלות מתוך המחסן, בסדר אקראי. ' +
+      'צריך לפחות ' + v.chapterQuestions + ' כדי שהמבחן ייפתח.</span></div>' +
+      (!c.questions.length
+        ? '<div class="notice quiet">' + icon('shield-check', 'ok') +
+          '<span>לפרק הזה אין עדיין שאלות משלו, ולכן המבחן נשלף מהמחסן הכללי של התוכנית. ' +
+          'ברגע שתוסיפו כאן שאלה אחת — הפרק יעבור להשתמש רק בשאלות שלו.</span></div>'
+        : '') +
+      (c.questions.length
+        ? c.questions.map(function (q, i) {
+            return '<div class="qa"><div class="q">' +
+              '<div class="row between"><span class="qno">שאלה ' + (i + 1) + '</span>' +
+              '<button type="button" class="btn-link" data-act="chapDelQuestion" data-arg="' + i + '">מחיקה</button></div>' +
+              textarea(2, 'נוסח השאלה', q).replace('class="textarea"', 'class="textarea" aria-label="נוסח שאלה ' + (i + 1) + '" data-cur="' + path + '.questions.' + i + '"') +
+              '</div></div>';
+          }).join('')
+        : '') +
+      '<button type="button" class="uploadbtn" data-act="chapAddQuestion">' + icon('plus') + '<span>הוספת שאלה</span></button>' +
+      (c.questions.length && c.questions.length < v.chapterQuestions
+        ? '<div class="notice quiet">' + icon('shield-check') + '<span>יש ' + c.questions.length +
+          ' שאלות במחסן ודרושות ' + v.chapterQuestions + '. העובדים יקבלו את כל מה שיש.</span></div>'
+        : '') +
+      '</div>' +
+
+      '<div class="row"><button type="button" class="btn btn-primary btn-lg" data-act="go" data-arg="curriculum">' +
+      icon('check') + '<span>סיימתי</span></button>' +
+      '<span class="tiny muted">השינויים נשמרים תוך כדי עריכה.</span></div>';
+
+    return h + '</div>';
+  };
+
+  /* 25 — ניהול השיעורים (רכז הדרכה) */
+  screens.sessionsEdit = function (v) {
+    var list = sessions();
+    var edited = Array.isArray(state.sessions);
+
+    var h = '<div class="page narrow" style="gap:20px">' +
+      back('coordinator', 'חזרה לרכז ההדרכה') +
+      '<div class="row between" style="align-items:flex-end;gap:16px">' +
+      '<div class="stack s6"><h1 class="h1">ניהול השיעורים</h1>' +
+      '<div class="small muted">לוח שיעורי ההעשרה שכל העובדים רואים. שיעור מסומן ״משודר״ נפתח כדף שיעור חי; ״הוקלט״ פותח את דף הצפייה והשאלון.</div></div>' +
+      (edited
+        ? '<button type="button" class="btn btn-quiet btn-sm" data-act="sessReset">' + icon('clock-clockwise') + '<span>חזרה ללוח המקורי</span></button>'
+        : '<span class="tag neutral">הלוח המקורי</span>') + '</div>';
+
+    h += list.map(function (ss, i) {
+      var pathBase = 'sessions.' + i + '.';
+      return '<div class="card pad stack s12">' +
+        '<div class="row between"><span class="kicker">שיעור ' + (i + 1) + '</span>' +
+        '<button type="button" class="btn-link" data-act="sessDelete" data-arg="' + i + '">מחיקת השיעור</button></div>' +
+        field('כותרת', '<input class="input" value="' + esc(ss.title || '') + '" data-sess="' + pathBase + 'title">') +
+        '<div class="grid-fields sm">' +
+        field('חודש', '<input class="input" value="' + esc(ss.month || '') + '" data-sess="' + pathBase + 'month">') +
+        field('יום בחודש', '<input class="input" value="' + esc(ss.day || '') + '" data-sess="' + pathBase + 'day">') +
+        field('יום בשבוע', '<input class="input" value="' + esc(ss.dow || '') + '" data-sess="' + pathBase + 'dow">') +
+        '</div>' +
+        field('שעה ומקום', '<input class="input" value="' + esc(ss.when || '') + '" data-sess="' + pathBase + 'when">') +
+        field('מרצה ופרטים', '<input class="input" value="' + esc(ss.who || '') + '" data-sess="' + pathBase + 'who">') +
+        '<div class="grid-fields sm">' +
+        field('שעות המשך', '<input class="input" type="number" min="0" step="0.5" value="' + esc(ss.hours || 0) + '" data-sess="' + pathBase + 'hours">') +
+        field('קישור Zoom', '<input class="input ltr" placeholder="https://…" value="' + esc(ss.link || '') + '" data-sess="' + pathBase + 'link">') +
+        field('קהל', '<select class="select" data-sess="' + pathBase + 'dept">' +
+          [['all', 'כל העובדים'], ['head', 'פגועי ראש'], ['ptsd', 'פוסט-טראומה']].map(function (o) {
+            return '<option value="' + o[0] + '"' + (String(ss.dept || 'all') === o[0] ? ' selected' : '') + '>' + esc(o[1]) + '</option>';
+          }).join('') + '</select>') +
+        '</div>' +
+        '<div class="row tight">' +
+        '<button type="button" class="pill" data-act="sessFlag" data-arg="' + i + ':live" aria-pressed="' + !!ss.live + '">משודר עכשיו</button>' +
+        '<button type="button" class="pill" data-act="sessFlag" data-arg="' + i + ':recorded" aria-pressed="' + !!ss.recorded + '">הוקלט</button>' +
+        '<button type="button" class="pill" data-act="sessFlag" data-arg="' + i + ':registered" aria-pressed="' + !!ss.registered + '">נרשמתי</button>' +
+        '</div></div>';
+    }).join('');
+
+    if (!list.length) h += '<div class="card pad small muted">אין עדיין שיעורים בלוח.</div>';
+
+    h += '<button type="button" class="btn btn-primary" style="align-self:flex-start" data-act="sessAdd">' +
+      icon('plus') + '<span>הוספת שיעור</span></button>' +
+      '<div class="row"><button type="button" class="btn btn-quiet btn-lg" data-act="go" data-arg="coordinator">' +
+      icon('check') + '<span>סיימתי</span></button>' +
+      '<span class="tiny muted">השינויים נשמרים תוך כדי עריכה.</span></div>';
+    return h + '</div>';
+  };
+
+  /* 26 — ניהול מאגר הידע (רכז הדרכה) */
+  screens.libraryEdit = function (v) {
+    var list = assets();
+    var edited = Array.isArray(state.assets);
+
+    var h = '<div class="page narrow" style="gap:20px">' +
+      back('coordinator', 'חזרה לרכז ההדרכה') +
+      '<div class="row between" style="align-items:flex-end;gap:16px">' +
+      '<div class="stack s6"><h1 class="h1">ניהול מאגר הידע</h1>' +
+      '<div class="small muted">הנכסים שכל העובדים רואים. עובדים יכולים להוסיף נכסים בעצמם — מה שהם מעלים מופיע כאן לתיוג.</div></div>' +
+      (edited
+        ? '<button type="button" class="btn btn-quiet btn-sm" data-act="libReset">' + icon('clock-clockwise') + '<span>חזרה למאגר המקורי</span></button>'
+        : '<span class="tag neutral">המאגר המקורי</span>') + '</div>';
+
+    h += list.map(function (a, i) {
+      var b = 'assets.' + i + '.';
+      return '<div class="card pad stack s12">' +
+        '<div class="row between"><span class="kicker">נכס ' + (i + 1) + '</span>' +
+        '<button type="button" class="btn-link" data-act="libDelete" data-arg="' + i + '">מחיקה</button></div>' +
+        field('כותרת', '<input class="input" value="' + esc(a.title || '') + '" data-asset="' + b + 'title">') +
+        field('תיאור', textarea(2, 'מה יש בנכס', a.desc || '').replace('class="textarea"', 'class="textarea" data-asset="' + b + 'desc"')) +
+        '<div class="grid-fields sm">' +
+        field('נושא', '<select class="select" data-asset="' + b + 'topic">' +
+          TOPICS.map(function (t) {
+            return '<option' + (a.topic === t.name ? ' selected' : '') + '>' + esc(t.name) + '</option>';
+          }).join('') + '</select>') +
+        field('סוג', '<input class="input" value="' + esc(a.kind || '') + '" data-asset="' + b + 'kind">') +
+        field('קישור', '<input class="input ltr" placeholder="https://…" value="' + esc(a.url || '') + '" data-asset="' + b + 'url">') +
+        '</div>' +
+        field('שורת מקור', '<input class="input" value="' + esc(a.meta || '') + '" data-asset="' + b + 'meta">') +
+        '</div>';
+    }).join('');
+
+    if (!list.length) h += '<div class="card pad small muted">המאגר ריק.</div>';
+
+    h += '<button type="button" class="btn btn-primary" style="align-self:flex-start" data-act="libAdd">' +
+      icon('plus') + '<span>הוספת נכס</span></button>' +
+      '<div class="row"><button type="button" class="btn btn-quiet btn-lg" data-act="go" data-arg="coordinator">' +
+      icon('check') + '<span>סיימתי</span></button>' +
+      '<span class="tiny muted">השינויים נשמרים תוך כדי עריכה.</span></div>';
     return h + '</div>';
   };
 
@@ -1990,7 +2351,7 @@
 
     curAdd: function (arg) {
       var c = editableCurriculum();
-      c.stages[Number(arg)].chapters.push('פרק חדש');
+      c.stages[Number(arg)].chapters.push(asChapter('פרק חדש'));
       set({}, { top: false });
     },
 
@@ -2012,7 +2373,7 @@
 
     curAddStage: function () {
       var c = editableCurriculum();
-      c.stages.push({ title: 'שלב חדש', days: '', hours: '', chapters: ['פרק חדש'] });
+      c.stages.push({ title: 'שלב חדש', days: '', hours: '', chapters: [asChapter('פרק חדש')] });
       set({});
     },
 
@@ -2025,13 +2386,49 @@
 
     curAddTrack: function (arg) {
       var c = editableCurriculum();
-      c.tracks[arg].chapters.push('פרק חדש');
+      c.tracks[arg].chapters.push(asChapter('פרק חדש'));
       set({});
     },
 
     curRemoveTrack: function (arg) {
       var p = arg.split(':'), c = editableCurriculum();
       c.tracks[p[0]].chapters.splice(Number(p[1]), 1);
+      set({});
+    },
+
+    editChapter: function (arg) {
+      set({ editRef: arg, screen: 'chapterEdit' }, { top: true });
+    },
+
+    chapAddOutline: function () { chapterFor(state.editRef).outline.push(''); set({}); },
+    chapDelOutline: function (i) { chapterFor(state.editRef).outline.splice(Number(i), 1); set({}); },
+    chapAddMaterial: function () { chapterFor(state.editRef).materials.push({ name: '', url: '' }); set({}); },
+    chapDelMaterial: function (i) { chapterFor(state.editRef).materials.splice(Number(i), 1); set({}); },
+    chapAddQuestion: function () { chapterFor(state.editRef).questions.push(''); set({}); },
+    chapDelQuestion: function (i) { chapterFor(state.editRef).questions.splice(Number(i), 1); set({}); },
+
+    curAddDefaultQ: function () {
+      var c = editableCurriculum();
+      if (!Array.isArray(c.defaultBank)) c.defaultBank = DEFAULT_CURRICULUM.defaultBank.slice();
+      c.defaultBank.push('');
+      set({});
+    },
+    curDelDefaultQ: function (i) {
+      var c = editableCurriculum();
+      if (!Array.isArray(c.defaultBank)) c.defaultBank = DEFAULT_CURRICULUM.defaultBank.slice();
+      c.defaultBank.splice(Number(i), 1);
+      set({});
+    },
+
+    curAddFinalQ: function () {
+      var c = editableCurriculum();
+      if (!Array.isArray(c.finalBank)) c.finalBank = [];
+      c.finalBank.push('');
+      set({});
+    },
+    curDelFinalQ: function (i) {
+      var c = editableCurriculum();
+      c.finalBank.splice(Number(i), 1);
       set({});
     },
 
@@ -2046,6 +2443,32 @@
       set({ screen: 'coordinator' }, { top: true });
       toast('תוכנית הלימודים עודכנה');
     },
+
+    /* ------------------------------------------------ sessions and library */
+
+    sessAdd: function () {
+      editableSessions().push({ id: 'n' + Date.now(), month: 'ספטמבר', day: '1', dow: 'יום א׳',
+        when: '16:00–17:00 · Zoom', title: 'שיעור חדש', who: '', hours: 1, dept: 'all', link: '' });
+      set({});
+    },
+    sessDelete: function (i) { editableSessions().splice(Number(i), 1); set({}); },
+    sessFlag: function (arg) {
+      var p = arg.split(':'), list = editableSessions(), ss = list[Number(p[0])];
+      ss[p[1]] = !ss[p[1]];
+      // A session cannot be broadcasting and already recorded at once.
+      if (p[1] === 'live' && ss.live) ss.recorded = false;
+      if (p[1] === 'recorded' && ss.recorded) ss.live = false;
+      set({});
+    },
+    sessReset: function () { state.sessions = null; save(); render(); toast('הלוח חזר למקור'); },
+
+    libAdd: function () {
+      editableAssets().unshift({ id: 'n' + Date.now(), icon: 'file-doc', kind: 'מסמך', kindClass: '',
+        uses: 0, fresh: 0, title: 'נכס חדש', desc: '', topic: TOPICS[0].name, meta: '', url: '' });
+      set({});
+    },
+    libDelete: function (i) { editableAssets().splice(Number(i), 1); set({}); },
+    libReset: function () { state.assets = null; save(); render(); toast('המאגר חזר למקור'); },
 
     print: function () { window.print(); },
 
@@ -2114,6 +2537,7 @@
       var el = fields[i];
       if (el.getAttribute('data-bind')) continue;      // handled separately (the name field)
       if (el.getAttribute('data-cur')) continue;       // the curriculum builder writes by path
+      if (el.getAttribute('data-sess') || el.getAttribute('data-asset')) continue;
       if (el.closest('.demobar')) continue;
       var key = fieldKey(v, el, seen);
       el.setAttribute('data-field', key);
@@ -2215,12 +2639,29 @@
 
   /* Inputs write straight to state without re-rendering, so typing is never
      interrupted and nothing is lost to a refresh. */
+  /* Writes a value into a nested structure by dotted path, without a
+     re-render — so editing a title never steals focus. */
+  function writePath(rootObj, path, el) {
+    var parts = path.split('.');
+    var node = rootObj;
+    for (var i = 0; i < parts.length - 1; i++) node = node[parts[i]];
+    var last = parts[parts.length - 1];
+    node[last] = el.type === 'number' ? (Number(el.value) || 0) : el.value;
+    save();
+  }
+
   function captureField(e) {
     var el = e.target;
     if (!el || !el.getAttribute) return;
 
     var bound = el.getAttribute('data-bind');
     if (bound) { state[bound] = el.value; save(); return; }
+
+    var sessPath = el.getAttribute('data-sess');
+    if (sessPath) { writePath(editableSessions(), sessPath.replace(/^sessions\./, ''), el); return; }
+
+    var assetPath = el.getAttribute('data-asset');
+    if (assetPath) { writePath(editableAssets(), assetPath.replace(/^assets\./, ''), el); return; }
 
     var path = el.getAttribute('data-cur');
     if (path) {
