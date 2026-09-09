@@ -170,6 +170,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 // internet pull every institute's budgets/salaries/employees with one HTTP request,
 // no login needed) — see callAppStateGateway below and app-state-gateway/index.ts.
 const APP_STATE_GATEWAY_URL = SUPABASE_URL + '/functions/v1/app-state-gateway';
+const PROJECTS_GATEWAY_URL = SUPABASE_URL + '/functions/v1/projects-gateway';
 const PROJECTS_URL = SUPABASE_URL + '/rest/v1/projects';
 const TASKS_URL = SUPABASE_URL + '/rest/v1/project_tasks';
 const UPDATES_URL = SUPABASE_URL + '/rest/v1/project_updates';
@@ -199,6 +200,24 @@ async function callAppStateGateway(body) {
   } catch (e) {
     return { ok: false, error: 'network' };
   }
+}
+// All projects/tasks/updates/documents traffic now goes through projects-gateway,
+// which requires the session token (see projects-gateway/index.ts) — the tables are
+// no longer reachable with the public anon key. Returns parsed JSON ({ ok, rows? }).
+async function callProjectsGateway(body) {
+  try {
+    const res = await fetch(PROJECTS_GATEWAY_URL, { method: 'POST', headers: HEADERS_JSON, body: JSON.stringify({ ...body, token: state.authToken || '' }) });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, error: json.error || 'server_error' };
+    return json;
+  } catch (e) {
+    return { ok: false, error: 'network' };
+  }
+}
+async function pgRows(action, params) {
+  const r = await callProjectsGateway({ action, ...(params || {}) });
+  if (!r.ok) throw new Error(r.error || 'gateway_error');
+  return Array.isArray(r.rows) ? r.rows : [];
 }
 const PROJECTS_SELECT = '*,project_tasks(id,status)';
 const POLL_MS = 20000;
@@ -346,19 +365,16 @@ async function pollTick() {
   if (state.screen !== 'app') return;
   if (state.view === 'projectList' && state.currentInstituteId) {
     try {
-      const res = await fetch(PROJECTS_URL + '?institute_id=eq.' + encodeURIComponent(state.currentInstituteId) + '&select=' + encodeURIComponent(PROJECTS_SELECT) + '&order=created_at.desc', { headers: HEADERS_GET });
-      if (res.ok) { state.projects = await res.json(); render(); }
+      state.projects = await pgRows('listProjectsByInstitute', { instituteId: state.currentInstituteId });
+      render();
     } catch (e) { /* silent — next tick retries */ }
   } else if (state.view === 'projectDetail' && !state.isNewProject && state.currentProject) {
     // only refresh the task list, not the whole page — a full re-render would blow away
     // whatever the user is mid-typing in the project's own name/description/etc. fields
     try {
-      const res = await fetch(TASKS_URL + '?project_id=eq.' + encodeURIComponent(state.currentProject.id) + '&order=created_at.asc', { headers: HEADERS_GET });
-      if (res.ok) {
-        state.currentTasks = await res.json();
-        const container = document.getElementById('taskListContainer');
-        if (container) container.innerHTML = taskListHtml();
-      }
+      state.currentTasks = await pgRows('listTasksByProject', { projectId: state.currentProject.id });
+      const container = document.getElementById('taskListContainer');
+      if (container) container.innerHTML = taskListHtml();
     } catch (e) { /* silent — next tick retries */ }
   }
 }
@@ -605,8 +621,8 @@ async function moveProjectToStatus(projectId, newStatus) {
   p.status = newStatus;
   render();
   try {
-    const res = await fetch(PROJECTS_URL + '?id=eq.' + encodeURIComponent(projectId), { method: 'PATCH', headers: { ...HEADERS_JSON, Prefer: 'return=minimal' }, body: JSON.stringify({ status: newStatus, updated_at: new Date().toISOString() }) });
-    if (!res.ok) throw new Error('status update failed');
+    const r = await callProjectsGateway({ action: 'updateProject', id: projectId, patch: { status: newStatus, updated_at: new Date().toISOString() } });
+    if (!r.ok) throw new Error('status update failed');
     if (newStatus === 'תקוע' && prevStatus !== 'תקוע') {
       notifyIdentity(['national', 'president'], 'פרויקט תקוע', `${p.name} — ${p.institute_name || instituteName(p.institute_id)}`);
     }
@@ -936,9 +952,7 @@ async function fetchAuthenticatedAppData() {
 
 async function fetchProjectCounts() {
   try {
-    const res = await fetch(PROJECTS_URL + '?select=institute_id', { headers: HEADERS_GET });
-    if (!res.ok) return;
-    const rows = await res.json();
+    const rows = await pgRows('projectCounts', {});
     const counts = {};
     rows.forEach((r) => { counts[r.institute_id] = (counts[r.institute_id] || 0) + 1; });
     state.projectCounts = counts;
@@ -950,8 +964,7 @@ async function openInstituteProjects(instituteId) {
   state.currentInstituteId = instituteId;
   state.busy = true; render();
   try {
-    const res = await fetch(PROJECTS_URL + '?institute_id=eq.' + encodeURIComponent(instituteId) + '&select=' + encodeURIComponent(PROJECTS_SELECT) + '&order=created_at.desc', { headers: HEADERS_GET });
-    state.projects = res.ok ? await res.json() : [];
+    state.projects = await pgRows('listProjectsByInstitute', { instituteId });
   } catch (e) { state.projects = []; }
   state.busy = false;
   state.view = 'projectList';
@@ -1028,14 +1041,14 @@ async function openProjectDetail(id) {
   state.expenseDraft = { desc: '', amount: '' };
   render();
   try {
-    const [tasksRes, updatesRes, docsRes] = await Promise.all([
-      fetch(TASKS_URL + '?project_id=eq.' + encodeURIComponent(id) + '&order=created_at.asc', { headers: HEADERS_GET }),
-      fetch(UPDATES_URL + '?project_id=eq.' + encodeURIComponent(id) + '&order=created_at.desc', { headers: HEADERS_GET }),
-      fetch(DOCS_URL + '?project_id=eq.' + encodeURIComponent(id) + '&order=created_at.desc', { headers: HEADERS_GET }),
+    const [tasks, updates, docs] = await Promise.all([
+      pgRows('listTasksByProject', { projectId: id }),
+      pgRows('listUpdatesByProject', { projectId: id }),
+      pgRows('listDocsByProject', { projectId: id }),
     ]);
-    state.currentTasks = tasksRes.ok ? await tasksRes.json() : [];
-    state.currentUpdates = updatesRes.ok ? await updatesRes.json() : [];
-    state.currentDocuments = docsRes.ok ? await docsRes.json() : [];
+    state.currentTasks = tasks;
+    state.currentUpdates = updates;
+    state.currentDocuments = docs;
   } catch (e) { state.currentTasks = []; state.currentUpdates = []; state.currentDocuments = []; }
   render();
 }
@@ -1064,11 +1077,11 @@ async function saveProject() {
     if (wasNew) {
       payload.id = uid('proj_');
       payload.created_at = new Date().toISOString();
-      const res = await fetch(PROJECTS_URL, { method: 'POST', headers: { ...HEADERS_JSON, Prefer: 'return=minimal' }, body: JSON.stringify(payload) });
-      if (!res.ok) throw new Error('create failed');
+      const r = await callProjectsGateway({ action: 'insertProject', row: payload });
+      if (!r.ok) throw new Error('create failed');
     } else {
-      const res = await fetch(PROJECTS_URL + '?id=eq.' + encodeURIComponent(state.currentProject.id), { method: 'PATCH', headers: { ...HEADERS_JSON, Prefer: 'return=minimal' }, body: JSON.stringify(payload) });
-      if (!res.ok) throw new Error('update failed');
+      const r = await callProjectsGateway({ action: 'updateProject', id: state.currentProject.id, patch: payload });
+      if (!r.ok) throw new Error('update failed');
     }
   } catch (e) {
     state.saving = false; render();
@@ -1104,8 +1117,9 @@ async function deleteProject() {
   if (!confirm('למחוק את הפרויקט "' + state.currentProject.name + '"? הפעולה בלתי הפיכה, כולל כל המשימות שבו.')) return;
   state.saving = true; render();
   try {
-    await fetch(TASKS_URL + '?project_id=eq.' + encodeURIComponent(state.currentProject.id), { method: 'DELETE', headers: HEADERS_JSON });
-    await fetch(PROJECTS_URL + '?id=eq.' + encodeURIComponent(state.currentProject.id), { method: 'DELETE', headers: HEADERS_JSON });
+    const rt = await callProjectsGateway({ action: 'deleteTasksByProject', projectId: state.currentProject.id });
+    const rp = await callProjectsGateway({ action: 'deleteProject', id: state.currentProject.id });
+    if (!rt.ok || !rp.ok) throw new Error('delete failed');
   } catch (e) {
     state.saving = false; render();
     alert('המחיקה נכשלה — נסה/י שוב');
@@ -1120,15 +1134,15 @@ async function addTask() {
   if (!title || !state.currentProject) return;
   const row = { id: uid('task_'), project_id: state.currentProject.id, title, assignee: (state.taskDraft.assignee || '').trim(), due_date: state.taskDraft.dueDate || null, status: 'ממתין', created_at: new Date().toISOString() };
   try {
-    const res = await fetch(TASKS_URL, { method: 'POST', headers: { ...HEADERS_JSON, Prefer: 'return=minimal' }, body: JSON.stringify(row) });
-    if (!res.ok) throw new Error('add task failed');
+    const r = await callProjectsGateway({ action: 'insertTask', row });
+    if (!r.ok) throw new Error('add task failed');
   } catch (e) { alert('הוספת המשימה נכשלה'); return; }
   state.taskDraft = { title: '', assignee: '', dueDate: '' };
   await openProjectDetail(state.currentProject.id);
 }
 
 async function setTaskStatus(taskId, status) {
-  try { await fetch(TASKS_URL + '?id=eq.' + encodeURIComponent(taskId), { method: 'PATCH', headers: { ...HEADERS_JSON, Prefer: 'return=minimal' }, body: JSON.stringify({ status }) }); } catch (e) {}
+  try { await callProjectsGateway({ action: 'updateTask', id: taskId, patch: { status } }); } catch (e) {}
   const t = state.currentTasks.find((x) => x.id === taskId);
   if (t) t.status = status;
   render();
@@ -1136,7 +1150,7 @@ async function setTaskStatus(taskId, status) {
 function toggleTaskDone(taskId, checked) { setTaskStatus(taskId, checked ? 'הושלם' : 'ממתין'); }
 
 async function removeTask(taskId) {
-  try { await fetch(TASKS_URL + '?id=eq.' + encodeURIComponent(taskId), { method: 'DELETE', headers: HEADERS_JSON }); } catch (e) {}
+  try { await callProjectsGateway({ action: 'deleteTask', id: taskId }); } catch (e) {}
   state.currentTasks = state.currentTasks.filter((t) => t.id !== taskId);
   render();
 }
@@ -1151,7 +1165,7 @@ async function saveChecklist(taskId, checklist) {
   if (t) t.checklist = checklist;
   const container = document.getElementById('taskListContainer');
   if (container) container.innerHTML = taskListHtml();
-  try { await fetch(TASKS_URL + '?id=eq.' + encodeURIComponent(taskId), { method: 'PATCH', headers: { ...HEADERS_JSON, Prefer: 'return=minimal' }, body: JSON.stringify({ checklist }) }); } catch (e) {}
+  try { await callProjectsGateway({ action: 'updateTask', id: taskId, patch: { checklist } }); } catch (e) {}
 }
 
 function addChecklistItem(taskId) {
@@ -1188,8 +1202,8 @@ async function addUpdate() {
   const input = document.getElementById('updateDraftInput');
   if (input) input.value = '';
   try {
-    const res = await fetch(UPDATES_URL, { method: 'POST', headers: { ...HEADERS_JSON, Prefer: 'return=minimal' }, body: JSON.stringify(row) });
-    if (!res.ok) throw new Error('add update failed');
+    const r = await callProjectsGateway({ action: 'insertUpdate', row });
+    if (!r.ok) throw new Error('add update failed');
   } catch (e) {
     state.currentUpdates = state.currentUpdates.filter((u) => u.id !== row.id);
     const c = document.getElementById('updatesListContainer');
@@ -1219,8 +1233,8 @@ async function uploadDocument(file) {
   try {
     const dataUrl = await readFileAsDataUrl(file);
     const row = { id: uid('doc_'), project_id: state.currentProject.id, file_name: file.name, file_type: file.type || '', data_url: dataUrl, created_at: new Date().toISOString() };
-    const res = await fetch(DOCS_URL, { method: 'POST', headers: { ...HEADERS_JSON, Prefer: 'return=minimal' }, body: JSON.stringify(row) });
-    if (!res.ok) throw new Error('upload failed');
+    const r = await callProjectsGateway({ action: 'insertDoc', row });
+    if (!r.ok) throw new Error('upload failed');
     state.currentDocuments = [row, ...state.currentDocuments];
   } catch (e) {
     state.docUploadError = 'העלאת הקובץ נכשלה — נסה/י שוב.';
@@ -1233,7 +1247,7 @@ async function uploadDocument(file) {
 
 async function removeDocument(docId) {
   if (!confirm('להסיר את המסמך?')) return;
-  try { await fetch(DOCS_URL + '?id=eq.' + encodeURIComponent(docId), { method: 'DELETE', headers: HEADERS_JSON }); } catch (e) {}
+  try { await callProjectsGateway({ action: 'deleteDoc', id: docId }); } catch (e) {}
   state.currentDocuments = state.currentDocuments.filter((d) => d.id !== docId);
   render();
 }
@@ -1249,11 +1263,8 @@ async function openOverview() {
   render();
   try {
     const ids = overviewScopeInstituteIds();
-    const filter = state.role === 'instituteManager'
-      ? '&institute_id=eq.' + encodeURIComponent(state.myInstituteId)
-      : '';
-    const res = await fetch(PROJECTS_URL + '?select=' + encodeURIComponent(PROJECTS_SELECT) + filter + '&order=target_date.asc.nullslast', { headers: HEADERS_GET });
-    state.overviewProjects = res.ok ? await res.json() : [];
+    const overviewInstId = state.role === 'instituteManager' ? state.myInstituteId : '';
+    state.overviewProjects = await pgRows('listProjectsOverview', overviewInstId ? { instituteId: overviewInstId } : {});
   } catch (e) { state.overviewProjects = []; }
   state.overviewLoading = false;
   render();
@@ -1345,8 +1356,7 @@ async function openMyTasks() {
 async function fetchMyTasks() {
   state.myTasksLoading = true; render();
   try {
-    const res = await fetch(TASKS_URL + '?select=' + encodeURIComponent('*,projects(id,name,status,institute_id,institute_name)') + '&assignee=eq.' + encodeURIComponent(state.myName) + '&order=due_date.asc.nullslast', { headers: HEADERS_GET });
-    let rows = res.ok ? await res.json() : [];
+    let rows = await pgRows('tasksByAssignee', { assignee: state.myName });
     if (state.role === 'instituteManager') rows = rows.filter((t) => t.projects && t.projects.institute_id === state.myInstituteId);
     state.myTasks = rows;
   } catch (e) { state.myTasks = []; }
@@ -1413,7 +1423,7 @@ async function setMyTaskStatus(taskId, checked) {
   const t = state.myTasks.find((x) => x.id === taskId);
   if (t) t.status = status;
   render();
-  try { await fetch(TASKS_URL + '?id=eq.' + encodeURIComponent(taskId), { method: 'PATCH', headers: { ...HEADERS_JSON, Prefer: 'return=minimal' }, body: JSON.stringify({ status }) }); } catch (e) {}
+  try { await callProjectsGateway({ action: 'updateTask', id: taskId, patch: { status } }); } catch (e) {}
 }
 
 async function enterApp() {

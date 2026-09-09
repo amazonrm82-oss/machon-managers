@@ -181,14 +181,68 @@ drop policy if exists "anon can update app_state" on app_state;
 בפועל. זו הרחבה סבירה להמשך, לא נכללה כאן כדי לשמור את התיקון הזה ממוקד וניתן
 לבדיקה.
 
-## שלב 3 (עתידי, לא בוצע) — `projects`, `project_documents`, `push_subscriptions`
+## שלב 3 — `projects`, `project_tasks`, `project_updates`, `project_documents`, `push_subscriptions` (הקוד בוצע; שלבי Supabase ידניים)
 
 באותה בדיקת Policies התגלה ש-`projects` ו-`project_documents` פתוחות לגמרי
 (policy בשם "anon can manage ..." עם COMMAND=`ALL`), וכנ"ל `push_subscriptions`.
-כלומר גם פרויקטים ומסמכים של כל המכונים ניתנים לקריאה/שינוי/מחיקה לכל אחד
-באינטרנט. זו בעיה נפרדת מ-`app_state`, באותה משפחה — ותידרש הרחבה דומה של
-`app-state-gateway` (או פונקציה חדשה) שתשמש שער גם לטבלאות האלה. לא בוצע בשלב הזה
-— מומלץ לטפל בזה כהמשך ישיר, באותה שיטה (שער + טוקן, בלי לשנות את חוויית הכניסה).
+בפועל גם `project_tasks` ו-`project_updates` (משימות ועדכונים של כל פרויקט) היו
+באותו מצב. כלומר כל הפרויקטים, המשימות, העדכונים, המסמכים המועלים ומנויי ה-Push
+של כל המכונים היו ניתנים לקריאה/שינוי/מחיקה לכל אחד באינטרנט עם ה-anon key, בלי
+להתחבר בכלל — בדיוק אותו סוג חור שנסגר ל-`app_state` בשלב 2.
+
+### מה תוקן בקוד (כבר בוצע, בענף הזה)
+
+- נוסף Edge Function חדש — `projects-gateway` — שהוא כעת הדרך היחידה שבה
+  `projects.html` (וגם `index.html`, עבור `push_subscriptions`) קורא/כותב את חמש
+  הטבלאות האלה. הפונקציה דורשת טוקן חתום תקף (אותו טוקן שמנפיק `role-auth` בהתחברות
+  מוצלחת, שמאומת גם ב-`app-state-gateway`) לכל פעולה — אין בה שום פעולה ציבורית.
+- `projects.html` עבר לקרוא ל-`callProjectsGateway`/`pgRows` בכל מקום שבו קודם פנה
+  ישירות ל-`/rest/v1/projects|project_tasks|project_updates|project_documents`.
+- `index.html` מפנה עכשיו את שמירת/מחיקת מנוי ה-Push דרך אותה פונקציה.
+
+**היקף (כמו שלב 2):** זה סוגר רק גישה בלי התחברות. הוא עדיין **לא** מפריד בין
+מכונים (כל תפקיד מחובר עדיין יכול טכנית לגעת בפרויקטים של כל מכון) — זה השלב הבא.
+
+### מה צריך להריץ ב-Supabase — **סדר קפדני** (אחרת האתר החי נשבר באמצע)
+
+⚠️ בדיוק כמו בשלב 2: אם מורידים את מדיניות ה-anon על הטבלאות **לפני** שהקוד החדש
+עלה ל-main והפונקציה נפרסה, האתר החי (הקוד הישן, שקורא ל-`/rest/v1/...` ישירות)
+נשבר מיד. הסדר הנכון:
+
+**א. לפרוס את הפונקציה החדשה `projects-gateway`** — Edge Functions → Deploy a new
+function → Via Editor → שם: `projects-gateway`, ולהדביק את התוכן המלא מהקובץ
+`supabase/functions/projects-gateway/index.ts` בענף הזה. היא משתמשת באותו
+`AUTH_TOKEN_SECRET` שכבר הוגדר בשלב 2 (אין secret חדש), וב-`SUPABASE_URL` /
+`SUPABASE_SERVICE_ROLE_KEY` שמוזרקים אוטומטית.
+
+**ב. למזג את ה-PR ל-main** — רק אחרי א'. בשלב הזה חמש הטבלאות עדיין פתוחות ל-anon
+כרשת ביטחון, אז אין נפילה: הקוד הישן ממשיך לעבוד עד המיזוג, והקוד החדש (אחרי
+המיזוג) כבר עובר דרך השער.
+
+**ג. לבדוק בדפדפן חי, אחרי המיזוג** — להתחבר ל-`projects.html` (national ומנהל מכון),
+לוודא שרשימת הפרויקטים/המשימות/המסמכים נטענת ושאפשר ליצור/לערוך/למחוק פרויקט
+ומשימה, ושהפעלת/כיבוי התראות ב-`index.html` עדיין עובדות.
+
+**ד. רק אחרי שג' עבר — לנעול את חמש הטבלאות** — ב-SQL Editor:
+
+```sql
+drop policy if exists "anon can manage projects" on projects;
+drop policy if exists "anon can manage project_tasks" on project_tasks;
+drop policy if exists "anon can manage project_updates" on project_updates;
+drop policy if exists "anon can manage project_documents" on project_documents;
+drop policy if exists "anon can manage push_subscriptions" on push_subscriptions;
+```
+
+(שמות ה-policy עשויים להיות שונים אצלכם — ב-Authentication → Policies אפשר לראות
+את השם המדויק לכל טבלה ולמחוק אותו. משאירים RLS **מופעל** על כל טבלה בלי אף policy,
+בדיוק כמו ב-`app_state`/`role_passwords`, כך שרק ה-Edge Function עם ה-service_role
+key יכול לגעת בהן.) עד שצעד ד' רץ, הטבלאות עדיין פתוחות — הקוד כבר לא משתמש בגישה
+הישירה, אבל מי שקורא ל-REST עם ה-anon key ישירות עדיין יכול, בדיוק כמו שהוסבר על
+`app_state` בשלב 2.
+
+> `send-notification` ממשיך לרוץ כרגיל — הוא לא נגע בשינוי הזה. `project_tasks`/
+> `project_updates` נכללים ב-`projects-gateway` למרות שלא הופיעו במיפוי המקורי, כי
+> `projects.html` פונה גם אליהם ישירות.
 
 בנוסף: השלב הנוכחי (2) מוודא רק שמי שניגש ל-`app_state` **התחבר בפועל** עם סיסמה
 נכונה — הוא **לא** מוודא שמנהל מכון אחד לא יכול לגעת בנתוני מכון אחר (כל תפקיד
