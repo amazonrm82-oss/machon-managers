@@ -20,7 +20,7 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', () => {});
 
 self.addEventListener('push', (event) => {
-  let payload = { title: 'מכון פוירשטיין', body: 'יש עדכון חדש במערכת', url: './' };
+  let payload = { title: 'מכון פוירשטיין', body: 'יש עדכון חדש במערכת', url: './manage.html' };
   try {
     if (event.data) payload = { ...payload, ...event.data.json() };
   } catch (e) { /* ignore malformed payloads */ }
@@ -38,7 +38,7 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const targetUrl = (event.notification.data && event.notification.data.url) || './';
+  const targetUrl = (event.notification.data && event.notification.data.url) || './manage.html';
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
       for (const client of clients) {
