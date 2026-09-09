@@ -22,14 +22,28 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # learn.html is generated from learn-src/, so the deployed file can never
+      # drift from its source. Everything else is copied as-is.
+      - name: Build the learning system
+        run: node build-learn.mjs
+
       - name: Prepare site
         run: |
           mkdir -p _site
           cp index.html _site/index.html
+          cp manage.html _site/manage.html
+          cp learn.html _site/learn.html
           cp projects.html _site/projects.html
+          cp ms-config.js _site/ms-config.js
           cp manifest.json _site/manifest.json
           cp sw.js _site/sw.js
-          cp icon-192.png icon-512.png icon-180.png icon-32.png _site/
+          cp icon-192.png icon-512.png icon-180.png icon-32.png icon-maskable.png _site/
+          cp logo.svg _site/logo.svg
       - uses: actions/configure-pages@v5
         with:
           enablement: true
