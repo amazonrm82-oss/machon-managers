@@ -1093,3 +1093,8 @@ button.avatar:hover { background: var(--color-accent-300); }
   .curline .input { flex: 1 1 100%; order: 2; }
   .curline .iconbtn { width: 44px; height: 44px; }
 }
+
+.curline .chapbtn { flex-shrink: 0; white-space: nowrap; }
+@media (hover: none), (max-width: 720px) {
+  .curline .chapbtn { order: 3; flex: 1 1 auto; }
+}

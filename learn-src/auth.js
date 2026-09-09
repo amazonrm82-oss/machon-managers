@@ -17,6 +17,9 @@
   var CFG = window.MS_AUTH_CONFIG || {};
   var SESSION_KEY = 'feuerstein-learn-session';
   var configured = !!(CFG.clientId && CFG.tenantId);
+  // The demo entrance exists only while Microsoft sign-in is unconfigured,
+  // and only while it is explicitly allowed.
+  var demoAllowed = !configured && CFG.allowDemo !== false;
 
   /* ------------------------------------------------------------------ logo */
 
@@ -107,15 +110,22 @@
         '<span>התחברות עם חשבון המכון</span></button>' +
         '<p class="fp-gate-note">אותו חשבון Microsoft 365 שבו את/ה משתמש/ת ב-Teams ובמייל. ' +
         'הכניסה מתבצעת מול השרתים של Microsoft — המערכת לא רואה את הסיסמה.</p>';
+    } else if (demoAllowed) {
+      body =
+        '<div class="fp-gate-warn">' +
+        '<strong>ההתחברות עדיין בהגדרה.</strong>' +
+        'הכניסה למערכת היא עם חשבון Microsoft 365 של המכון. עד שהרישום ב-Entra ID יושלם, ' +
+        'אפשר להיכנס לצורכי הקמה והזנת תוכן.' +
+        '</div>' +
+        '<button type="button" class="fp-demo-btn" id="fp-demo-enter">כניסה זמנית · לצורכי הקמה</button>' +
+        '<p class="fp-gate-note">הנתונים נשמרים בדפדפן הזה בלבד עד שהשרת יחובר.</p>';
     } else {
       body =
         '<div class="fp-gate-warn">' +
-        '<strong>ההתחברות ל-Microsoft עדיין לא הוגדרה.</strong>' +
-        'צריך רישום אפליקציה ב-Microsoft Entra ID של המכון, ואז למלא את המזהים בקובץ ' +
-        '<code>ms-config.js</code>. ההוראות המלאות נמצאות ב-<code>learn-src/README.md</code>.' +
-        '</div>' +
-        '<button type="button" class="fp-demo-btn" id="fp-demo-enter">כניסה לדמו · ללא התחברות</button>' +
-        '<p class="fp-gate-note">מצב הדגמה: הנתונים מקומיים בדפדפן הזה בלבד.</p>';
+        '<strong>המערכת סגורה עד להשלמת ההתחברות.</strong>' +
+        'הכניסה היא עם חשבון Microsoft 365 של המכון, והרישום ב-Entra ID עדיין לא הושלם. ' +
+        'ההוראות ב-<code>learn-src/README.md</code>; המזהים נכנסים ל-<code>ms-config.js</code>.' +
+        '</div>';
     }
 
     root.innerHTML =

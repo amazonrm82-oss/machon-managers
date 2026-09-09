@@ -20,5 +20,12 @@ window.MS_AUTH_CONFIG = {
 
   // Leave empty to use this page's own address. Whatever is used here must be
   // registered as a "Single-page application" redirect URI in Entra ID.
-  redirectUri: ''
+  redirectUri: '',
+
+  // The temporary way in while the Entra registration is still pending.
+  // Set to false and the learning system has no entrance at all until
+  // clientId and tenantId above are filled in — including for you.
+  // Once they are filled in this setting is ignored: Microsoft is the only
+  // way in, and the demo entrance disappears by itself.
+  allowDemo: true
 };
