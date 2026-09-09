@@ -1068,3 +1068,28 @@ button.avatar:hover { background: var(--color-accent-300); }
   .queue .act { min-height: 40px; padding: 0 10px; }
   .check input { width: 24px; height: 24px; min-width: 24px; flex-shrink: 0; }
 }
+
+/* --------------------------------------------------------------------------
+   Curriculum builder
+   -------------------------------------------------------------------------- */
+
+.curline {
+  display: flex; align-items: center; gap: 8px;
+}
+.curline .curno {
+  font-family: var(--font-heading); font-size: 13px;
+  color: var(--color-accent-700); min-width: 34px; flex-shrink: 0;
+}
+.curline .input { flex: 1; min-width: 0; }
+.curline .iconbtn {
+  width: 36px; height: 36px; font-size: 16px;
+  color: var(--color-neutral-700); flex-shrink: 0;
+}
+.curline .iconbtn:disabled { opacity: 0.3; cursor: not-allowed; }
+.curline .iconbtn:not(:disabled):hover { background: var(--color-accent-100); color: var(--color-accent-700); }
+
+@media (hover: none), (max-width: 720px) {
+  .curline { flex-wrap: wrap; }
+  .curline .input { flex: 1 1 100%; order: 2; }
+  .curline .iconbtn { width: 44px; height: 44px; }
+}

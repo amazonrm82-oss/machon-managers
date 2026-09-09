@@ -1082,6 +1082,31 @@ button.avatar:hover { background: var(--color-accent-300); }
   .queue .act { min-height: 40px; padding: 0 10px; }
   .check input { width: 24px; height: 24px; min-width: 24px; flex-shrink: 0; }
 }
+
+/* --------------------------------------------------------------------------
+   Curriculum builder
+   -------------------------------------------------------------------------- */
+
+.curline {
+  display: flex; align-items: center; gap: 8px;
+}
+.curline .curno {
+  font-family: var(--font-heading); font-size: 13px;
+  color: var(--color-accent-700); min-width: 34px; flex-shrink: 0;
+}
+.curline .input { flex: 1; min-width: 0; }
+.curline .iconbtn {
+  width: 36px; height: 36px; font-size: 16px;
+  color: var(--color-neutral-700); flex-shrink: 0;
+}
+.curline .iconbtn:disabled { opacity: 0.3; cursor: not-allowed; }
+.curline .iconbtn:not(:disabled):hover { background: var(--color-accent-100); color: var(--color-accent-700); }
+
+@media (hover: none), (max-width: 720px) {
+  .curline { flex-wrap: wrap; }
+  .curline .input { flex: 1 1 100%; order: 2; }
+  .curline .iconbtn { width: 44px; height: 44px; }
+}
 </style>
 </head>
 <body>
@@ -1165,7 +1190,9 @@ window.ICONS = {
 "fill:certificate": "<path d=\"M232,86.53V56a16,16,0,0,0-16-16H40A16,16,0,0,0,24,56V184a16,16,0,0,0,16,16H160v24A8,8,0,0,0,172,231l24-13.74L220,231A8,8,0,0,0,232,224V161.47a51.88,51.88,0,0,0,0-74.94ZM128,144H72a8,8,0,0,1,0-16h56a8,8,0,0,1,0,16Zm0-32H72a8,8,0,0,1,0-16h56a8,8,0,0,1,0,16Zm88,98.21-16-9.16a8,8,0,0,0-7.94,0l-16,9.16V172a51.88,51.88,0,0,0,40,0ZM196,160a36,36,0,1,1,36-36A36,36,0,0,1,196,160Z\"/>",
 "fill:chat-circle-text": "<path d=\"M128,24A104,104,0,0,0,36.18,176.88L24.83,210.93a16,16,0,0,0,20.24,20.24l34.05-11.35A104,104,0,1,0,128,24Zm32,128H96a8,8,0,0,1,0-16h64a8,8,0,0,1,0,16Zm0-32H96a8,8,0,0,1,0-16h64a8,8,0,0,1,0,16Z\"/>",
 "fill:check-circle": "<path d=\"M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm45.66,85.66-56,56a8,8,0,0,1-11.32,0l-24-24a8,8,0,0,1,11.32-11.32L112,148.69l50.34-50.35a8,8,0,0,1,11.32,11.32Z\"/>",
-"fill:play": "<path d=\"M240,128a15.74,15.74,0,0,1-7.6,13.51L88.32,229.65a16,16,0,0,1-16.2.3A15.86,15.86,0,0,1,64,216.13V39.87a15.86,15.86,0,0,1,8.12-13.82,16,16,0,0,1,16.2.3L232.4,114.49A15.74,15.74,0,0,1,240,128Z\"/>"
+"fill:play": "<path d=\"M240,128a15.74,15.74,0,0,1-7.6,13.51L88.32,229.65a16,16,0,0,1-16.2.3A15.86,15.86,0,0,1,64,216.13V39.87a15.86,15.86,0,0,1,8.12-13.82,16,16,0,0,1,16.2.3L232.4,114.49A15.74,15.74,0,0,1,240,128Z\"/>",
+"caret-up": "<path d=\"M213.66,165.66a8,8,0,0,1-11.32,0L128,91.31,53.66,165.66a8,8,0,0,1-11.32-11.32l80-80a8,8,0,0,1,11.32,0l80,80A8,8,0,0,1,213.66,165.66Z\"/>",
+"caret-down": "<path d=\"M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z\"/>"
 };
 </script>
 <script>/* ==========================================================================
@@ -1212,6 +1239,9 @@ window.ICONS = {
     registered: false,
     libTab: 'assets',
     reviewTarget: '',
+    // null means "the institute's original programme"; the builder clones it
+    // on the first edit so the default is never mutated.
+    curriculum: null,
     libTopic: 'שיקום קוגניטיבי',
     libSort: 'used',
     scheduleFilter: 'all',
@@ -1259,6 +1289,7 @@ window.ICONS = {
         if (!Array.isArray(s.records[k])) s.records[k] = [];
       });
       if (!Array.isArray(s.userAssets)) s.userAssets = [];
+      if (s.curriculum && (!Array.isArray(s.curriculum.stages) || !s.curriculum.tracks)) s.curriculum = null;
     } catch (e) { /* private mode, cleared storage — start fresh */ }
     return s;
   }
@@ -1282,10 +1313,67 @@ window.ICONS = {
 
   var MANAGER = 'רון שקד';
 
-  var S1 = ['חזון המכון וסיפור פוירשטיין', 'למידה מתווכת ושינוי מבני', 'שנים-עשר קריטריוני התיווך', 'מכשירי ההעשרה האינסטרומנטלית', 'מבוא ל-LPAD ולהערכה דינמית', 'אתיקה, גבולות ופרטיות מטופלים'];
-  var S2 = ['יסודות נוירו-קוגניטיביים ופלסטיות', 'קשב וזיכרון עבודה', 'זיכרון ואסטרטגיות חיצוניות', 'תפקודים ניהוליים, מודעות וויסות', 'תקשורת חברתית ותפקוד חזותי-מרחבי', 'קביעת מטרות, תכנון טיפול ומעקב'];
-  var S3h = ['סוגי פגיעה, מסלולי שיקום ופרוגנוזה', 'אבחון קוגניטיבי וקביעת מטרות', 'עייפות קוגניטיבית, מודעות ותסכול', 'עבודה עם המשפחה והמסגרת'];
-  var S3p = ['טראומה ותגובות פוסט-טראומטיות', 'עקרונות טיפול מיודע-טראומה', 'שיקום קוגניטיבי בהקשר טראומטי', 'גבולות התפקיד, הפניה ושמירה על העובד'];
+  /* ------------------------------------------------------------ curriculum
+
+     The 90-day path is data, not code: the training coordinator builds it in
+     the curriculum screen and everything else — the stages on the home
+     screen, the chapters, the number of chapter tests the certificate asks
+     for, the hour targets — is derived from it. What follows is the default
+     the institute started with; nothing changes until someone edits it. */
+
+  var DEFAULT_CURRICULUM = {
+    stages: [
+      {
+        title: 'שיטת פוירשטיין', days: 'ימים 1–30',
+        hours: '20 שעות תוכן · 20 שעות פרקטיקה',
+        chapters: ['חזון המכון וסיפור פוירשטיין', 'למידה מתווכת ושינוי מבני',
+          'שנים-עשר קריטריוני התיווך', 'מכשירי ההעשרה האינסטרומנטלית',
+          'מבוא ל-LPAD ולהערכה דינמית', 'אתיקה, גבולות ופרטיות מטופלים']
+      },
+      {
+        title: 'שיקום קוגניטיבי', days: 'ימים 31–60',
+        hours: '20 שעות תוכן · 20 שעות פרקטיקה',
+        chapters: ['יסודות נוירו-קוגניטיביים ופלסטיות', 'קשב וזיכרון עבודה',
+          'זיכרון ואסטרטגיות חיצוניות', 'תפקודים ניהוליים, מודעות וויסות',
+          'תקשורת חברתית ותפקוד חזותי-מרחבי', 'קביעת מטרות, תכנון טיפול ומעקב']
+      },
+      {
+        title: 'הכשרת אגף', days: 'ימים 61–90',
+        hours: '20 שעות תוכן · 20 שעות פרקטיקה',
+        byTrack: true, chapters: []
+      }
+    ],
+    tracks: {
+      head: {
+        name: 'פגועי ראש',
+        blurb: 'שיקום קוגניטיבי לאחר פגיעה מוחית נרכשת',
+        chapters: ['סוגי פגיעה, מסלולי שיקום ופרוגנוזה', 'אבחון קוגניטיבי וקביעת מטרות',
+          'עייפות קוגניטיבית, מודעות ותסכול', 'עבודה עם המשפחה והמסגרת']
+      },
+      ptsd: {
+        name: 'פוסט-טראומה',
+        blurb: 'עבודה קוגניטיבית מיודעת-טראומה',
+        chapters: ['טראומה ותגובות פוסט-טראומטיות', 'עקרונות טיפול מיודע-טראומה',
+          'שיקום קוגניטיבי בהקשר טראומטי', 'גבולות התפקיד, הפניה ושמירה על העובד']
+      }
+    },
+    practiceTarget: 60,
+    ceTarget: 10,
+    finalQuestions: 12,
+    chapterQuestions: 4
+  };
+
+  function curriculum() {
+    var c = state.curriculum;
+    if (!c || !Array.isArray(c.stages) || !c.stages.length || !c.tracks) return DEFAULT_CURRICULUM;
+    return c;
+  }
+
+  /* A working copy to edit, cloned from the default the first time. */
+  function editableCurriculum() {
+    if (!state.curriculum) state.curriculum = JSON.parse(JSON.stringify(DEFAULT_CURRICULUM));
+    return state.curriculum;
+  }
 
   var TOPICS = [
     { name: 'שיטת פוירשטיין', n: 48 },
@@ -1358,8 +1446,15 @@ window.ICONS = {
     var initials = name.split(/\s+/).slice(0, 2).map(function (w) { return w[0]; }).join('');
     var managerName = MANAGER;
 
-    var stageIdx = day >= 90 ? 4 : day >= 60 ? 3 : day >= 30 ? 2 : 1;
-    var done = stageIdx === 4;
+    var stageCount = Math.max(1, curriculum().stages.length);
+    var stageIdx = day >= 90 ? stageCount + 1 : day >= 60 ? Math.min(3, stageCount) : day >= 30 ? Math.min(2, stageCount) : 1;
+    var done = stageIdx > stageCount;
+
+    var CUR = curriculum();
+    var stageDefs = CUR.stages;
+    var trackKey = isHead ? 'head' : 'ptsd';
+    var chaptersOf = function (st) { return st.byTrack ? (CUR.tracks[trackKey].chapters || []) : (st.chapters || []); };
+    var otherTrackKey = isHead ? 'ptsd' : 'head';
 
     function mk(list, no) {
       return list.map(function (title, i) {
@@ -1385,9 +1480,11 @@ window.ICONS = {
       });
     }
 
-    var c1 = mk(S1, 1), c2 = mk(S2, 2), c3 = mk(isHead ? S3h : S3p, 3);
-    var chapters = c1.concat(c2, c3);
-    var bonusList = (isHead ? S3p : S3h).map(function (title, i) {
+    var perStage = stageDefs.map(function (st, i) { return mk(chaptersOf(st), i + 1); });
+    var c1 = perStage[0] || [];
+    var chapters = perStage.reduce(function (a, b) { return a.concat(b); }, []);
+    var totalChapters = chapters.length;
+    var bonusList = (CUR.tracks[otherTrackKey].chapters || []).map(function (title, i) {
       return { id: 'ב.' + (i + 1), title: title };
     });
 
@@ -1398,28 +1495,30 @@ window.ICONS = {
           : { text: 'נעול', cls: 'neutral' };
     }
 
-    var stages = [
-      { no: 1, title: 'שיטת פוירשטיין', days: 'ימים 1–30', items: c1 },
-      { no: 2, title: 'שיקום קוגניטיבי', days: 'ימים 31–60', items: c2 },
-      { no: 3, title: 'הכשרת אגף · ' + deptName, days: 'ימים 61–90', items: c3 }
-    ].map(function (st) {
-      var s = stState(st.no), b = badge(s);
-      st.state = s; st.badgeText = b.text; st.badgeCls = b.cls;
-      st.hours = '20 שעות תוכן · 20 שעות פרקטיקה';
+    var stages = stageDefs.map(function (def, i) {
+      var no = i + 1;
+      var st = { no: no, title: def.byTrack ? def.title + ' · ' + deptName : def.title,
+                 days: def.days, items: perStage[i], hours: def.hours };
+      var sSt = stState(no), b = badge(sSt);
+      st.state = sSt; st.badgeText = b.text; st.badgeCls = b.cls;
       return st;
     });
 
     var testsDone = chapters.filter(function (c) { return c.done; }).length;
     var testsSubmitted = chapters.filter(function (c) { return c.submitted; }).length;
 
-    var practiceBase = Math.min(60, (stageIdx - 1) * 20);
+    var practiceTarget = Number(CUR.practiceTarget) || 60;
+    var ceTarget = Number(CUR.ceTarget) || 10;
+    var perStageHours = practiceTarget / stageCount;
+    var practiceBase = Math.min(practiceTarget, (stageIdx - 1) * perStageHours);
     var ownPracticeHours = state.practiceEntries.reduce(function (a, e) { return a + (Number(e.hours) || 0); }, 0);
     var practiceHours = Math.round((practiceBase + ownPracticeHours) * 10) / 10;
-    var practicePct = Math.min(100, Math.round(practiceHours / 60 * 100));
-    var observations = [0, 1, 3, 4][stageIdx - 1] + state.records.observations.length;
-    var meetings = Math.min(3, (stageIdx - 1) + state.records.meetings.length);
-    var ceHours = [0, 1.5, 3.5, 5][stageIdx - 1] + (state.quizDone ? 2 : 0);
-    var progressPct = done ? 100 : Math.round((testsDone + testsSubmitted) / 16 * 100);
+    var practicePct = Math.min(100, Math.round(practiceHours / practiceTarget * 100));
+    var observations = ([0, 1, 3, 4][Math.min(3, stageIdx - 1)] || 0) + state.records.observations.length;
+    var meetings = Math.min(stageCount, (stageIdx - 1) + state.records.meetings.length);
+    var ceHours = ([0, 1.5, 3.5, 5][Math.min(3, stageIdx - 1)] || 0) + (state.quizDone ? 2 : 0);
+    var progressPct = done ? 100
+      : totalChapters ? Math.round((testsDone + testsSubmitted) / totalChapters * 100) : 0;
 
     var current = chapters.filter(function (c) { return c.current; })[0]
       || chapters.filter(function (c) { return c.submitted; })[0]
@@ -1511,7 +1610,7 @@ window.ICONS = {
       review: 'משוב מנהל', final: 'מבחן מסכם', file: T.file, practiceNew: 'רשומת פרקטיקה',
       notifications: T.notif, search: 'חיפוש', schedule: T.schedule, session: 'דף שיעור',
       sessionAfter: 'דף שיעור', library: T.library, upload: 'העלאה למאגר', asset: 'נכס ידע',
-      admin: T.admin, managerTest: 'בדיקת מבחן', observation: 'תצפית שדה',
+      admin: T.admin, curriculum: 'תוכנית הלימודים', managerTest: 'בדיקת מבחן', observation: 'תצפית שדה',
       stageMeeting: 'שיחת סיכום שלב', fileReview: 'סקירת תיק', coordinator: 'רכז הדרכה'
     };
 
@@ -1543,16 +1642,20 @@ window.ICONS = {
       ownSubmissions: state.submissions, ownFeedback: state.feedback,
       ownRecords: state.records, ownAssets: state.userAssets,
       finalSubmitted: !!state.submissions.final,
-      cond1: done || testsDone === 16, cond2: done || !!state.submissions.final, cond3: practiceHours >= 60,
-      cond1Text: (done ? 16 : testsDone) + ' מתוך 16 מבחני פרק עם משוב',
-      cond3Text: practiceHours + ' מתוך 60 שעות פרקטיקה מאושרות',
+      totalChapters: totalChapters, practiceTarget: practiceTarget, ceTarget: ceTarget,
+      finalQuestions: Number(CUR.finalQuestions) || 12,
+      chapterQuestions: Number(CUR.chapterQuestions) || 4,
+      cond1: done || testsDone >= totalChapters, cond2: done || !!state.submissions.final,
+      cond3: practiceHours >= practiceTarget,
+      cond1Text: (done ? totalChapters : testsDone) + ' מתוך ' + totalChapters + ' מבחני פרק עם משוב',
+      cond3Text: practiceHours + ' מתוך ' + practiceTarget + ' שעות פרקטיקה מאושרות',
       heroKicker: done ? 'הכשרה הושלמה · יום ' + day
         : 'שלב ' + stageIdx + ' מתוך 3 · ' + ['שיטת פוירשטיין', 'שיקום קוגניטיבי', 'הכשרת אגף ' + deptName][stageIdx - 1] + ' · יום ' + day,
       heroTitle: done ? first + ', ההכשרה הושלמה — התעודה שלך מוכנה'
         : day === 1 ? 'שלום, ' + first + ' — מתחילים בשיטת פוירשטיין'
           : 'שלום, ' + first + ' — ממשיכים ב' + current.title,
       heroBody: done
-        ? 'תעודת מדריך/ה מוסמך/ת בתוקף עד 5.12.2028. הכשרת אגף ' + otherDeptName + ' נפתחה לך כבונוס — 16 שעות שנזקפות כשעות המשך.'
+        ? 'תעודת מדריך/ה מוסמך/ת בתוקף עד 5.12.2028. הכשרת אגף ' + otherDeptName + ' נפתחה לך כבונוס — ' + bonusList.length * 4 + ' שעות שנזקפות כשעות המשך.'
         : 'פרק ' + current.id + ' · כ-55 דקות. בסופו מבחן קצר ללא ציון — ' + managerName + ' קורא/ת ומגיב/ה, והתשובות עם ההערות נשמרות בתיק שלך.'
     };
   }
@@ -1564,7 +1667,7 @@ window.ICONS = {
     file: ['file', 'practiceNew'],
     schedule: ['schedule', 'session', 'sessionAfter'],
     library: ['library', 'upload', 'asset'],
-    admin: ['admin', 'managerTest', 'observation', 'stageMeeting', 'fileReview', 'coordinator']
+    admin: ['admin', 'managerTest', 'observation', 'stageMeeting', 'fileReview', 'coordinator', 'curriculum']
   };
 
   function areaOf(screen) {
@@ -1787,8 +1890,8 @@ window.ICONS = {
       '<div class="card pad flex-side stack s14">' +
       '<div class="kicker">לקראת התעודה</div>' +
       '<div class="stack" style="font-size:14px">' +
-      '<div class="row between nowrap"><span>מבחני פרק עם משוב</span><span class="muted">' + v.testsDone + ' מתוך 16</span></div>' +
-      '<div class="row between nowrap"><span>שעות פרקטיקה מאושרות</span><span class="muted">' + v.practiceHours + ' מתוך 60</span></div>' +
+      '<div class="row between nowrap"><span>מבחני פרק עם משוב</span><span class="muted">' + v.testsDone + ' מתוך ' + v.totalChapters + '</span></div>' +
+      '<div class="row between nowrap"><span>שעות פרקטיקה מאושרות</span><span class="muted">' + v.practiceHours + ' מתוך ' + v.practiceTarget + '</span></div>' +
       bar(v.practicePct) +
       '<div class="row between nowrap"><span>תצפיות שדה · לפי שיקול המנהל</span><span class="muted">' + v.observations + '</span></div>' +
       '<div class="row between nowrap"><span>שיחות סיכום שלב</span><span class="muted">' + v.meetings + ' מתוך 3</span></div>' +
@@ -1820,7 +1923,7 @@ window.ICONS = {
       v.bonusList.map(function (b) {
         return '<div class="chapter">' + icon('circle-dashed') + '<span class="t">' + esc(b.id + ' ' + b.title) + '</span></div>';
       }).join('') +
-      '<div class="foot">16 שעות תוכן · נזקפות כשעות המשך · ללא פרקטיקום חובה</div></div></div>' +
+      '<div class="foot">' + (v.bonusList.length * 4) + ' שעות תוכן · נזקפות כשעות המשך · ללא פרקטיקום חובה</div></div></div>' +
       '</div></div>';
 
     h += '<div class="cols">' +
@@ -2021,9 +2124,9 @@ window.ICONS = {
       back('file', 'חזרה לתיק שלי') +
       '<div class="stack s8">' +
       '<div class="row tight"><span class="kicker accent">מבחן מסכם · שלושת השלבים</span>' +
-      '<span class="tag outline">גרסה אישית · 12 מתוך 60 שאלות במחסן</span></div>' +
-      '<h1 class="h1">12 שאלות פתוחות, בלי ציון</h1>' +
-      '<p class="lead">ארבע שאלות מכל שלב. ' + esc(v.managerName) + ' קורא/ת ומגיב/ה כמו במבחני הפרקים. ההגשה היא אחד משלושת התנאים לתעודה — יחד עם 16 מבחני פרק עם משוב ו-60 שעות פרקטיקה מאושרות.</p></div>' +
+      '<span class="tag outline">גרסה אישית · ' + v.finalQuestions + ' מתוך 60 שאלות במחסן</span></div>' +
+      '<h1 class="h1">' + v.finalQuestions + ' שאלות פתוחות, בלי ציון</h1>' +
+      '<p class="lead">ארבע שאלות מכל שלב. ' + esc(v.managerName) + ' קורא/ת ומגיב/ה כמו במבחני הפרקים. ההגשה היא אחד משלושת התנאים לתעודה — יחד עם ' + v.totalChapters + ' מבחני פרק עם משוב ו-' + v.practiceTarget + ' שעות פרקטיקה מאושרות.</p></div>' +
       (v.done
         ? '<div class="notice">' + icon('fill:check-circle') +
         '<span>הוגש ביום 88 · המשוב של ' + esc(v.managerName) + ' ניתן ביום 90 · 12 שאלות, 5 הערות</span></div>'
@@ -2100,7 +2203,7 @@ window.ICONS = {
 
       '<div class="stack s20">' +
       '<div class="card clip">' +
-      '<div class="card-head"><span class="h4">יומן פרקטיקה</span><span class="small muted">' + v.practiceHours + ' מתוך 60 שעות · 20 לכל שלב</span></div>' +
+      '<div class="card-head"><span class="h4">יומן פרקטיקה</span><span class="small muted">' + v.practiceHours + ' מתוך ' + v.practiceTarget + ' שעות</span></div>' +
       '<div style="padding:12px 20px 0">' + bar(v.practicePct) + '</div>' +
       (v.hasPractice
         ? '<div class="rows">' + v.practice.map(function (e) {
@@ -2117,7 +2220,7 @@ window.ICONS = {
       '</div>' +
 
       '<div class="card clip">' +
-      '<div class="card-head"><span class="h4">פנקס שעות המשך</span><span class="small muted">' + v.ceHours + ' מתוך 10 בשנה</span></div>' +
+      '<div class="card-head"><span class="h4">פנקס שעות המשך</span><span class="small muted">' + v.ceHours + ' מתוך ' + v.ceTarget + ' בשנה</span></div>' +
       (v.hasCe
         ? '<div class="rows">' + v.ceList.map(function (c) {
           return '<div class="rowitem">' + icon('fill:check-circle', 'ok') +
@@ -2243,7 +2346,7 @@ window.ICONS = {
     var h = '<div class="page" style="gap:22px">' +
       '<div class="row between" style="align-items:flex-end;gap:16px">' +
       '<div class="stack s6"><h1 class="h1">שיעורי העשרה · תשפ״ז</h1>' +
-      '<div class="small muted">כל שיעור נזקף כשעות המשך אחרי נוכחות + שאלון 3 שאלות · שעות ההמשך שלך: ' + v.ceHours + ' מתוך 10</div></div>' +
+      '<div class="small muted">כל שיעור נזקף כשעות המשך אחרי נוכחות + שאלון 3 שאלות · שעות ההמשך שלך: ' + v.ceHours + ' מתוך ' + v.ceTarget + '</div></div>' +
       '<div class="chips">' + filters.map(function (x) {
         return '<button type="button" class="chip" data-act="scheduleFilter" data-arg="' + x[0] + '" aria-pressed="' + (f === x[0]) + '">' + esc(x[1]) + '</button>';
       }).join('') + '</div></div>';
@@ -2387,7 +2490,7 @@ window.ICONS = {
       (state.quizDone
         ? '<div class="card tintbg pad stack">' +
         '<div class="row tight">' + icon('fill:check-circle', 'ok') + '<span class="h4" style="color:var(--color-accent-800)">2 שעות המשך נזקפו</span></div>' +
-        '<div style="font-size:14px;line-height:1.6;color:var(--color-accent-800)">השאלון הוגש. השעות נוספו לפנקס בתיק שלך — ' + v.ceHours + ' מתוך 10 לשנה.</div>' +
+        '<div style="font-size:14px;line-height:1.6;color:var(--color-accent-800)">השאלון הוגש. השעות נוספו לפנקס בתיק שלך — ' + v.ceHours + ' מתוך ' + v.ceTarget + ' לשנה.</div>' +
         '<button type="button" class="btn btn-outline btn-sm" style="align-self:flex-start;background:var(--color-neutral-100)" data-act="go" data-arg="file">לפנקס בתיק</button></div>'
         : '') +
       '<div class="card pad stack s14">' +
@@ -2796,11 +2899,124 @@ window.ICONS = {
       '</div>' +
       '<div class="card pad-sm stack">' +
       '<span class="h4">פעולות</span>' +
+      '<button type="button" class="btn btn-primary btn-block" style="justify-content:flex-start" data-act="go" data-arg="curriculum">' + icon('graduation-cap') + '<span>בניית תוכנית הלימודים</span></button>' +
       '<button type="button" class="btn btn-outline btn-block" style="justify-content:flex-start" data-act="toast" data-arg="נפתחה תבנית שיעור חדשה">' + icon('calendar-plus') + '<span>שיבוץ שיעור מתבנית</span></button>' +
       '<button type="button" class="btn btn-quiet btn-block" style="justify-content:flex-start" data-act="toast" data-arg="הזמנת אורח נשלחה · הרשאה ל-30 יום">' + icon('user-plus') + '<span>הזמנת מרצה חיצוני · אורח 30 יום</span></button>' +
       '<button type="button" class="btn btn-quiet btn-block" style="justify-content:flex-start" data-act="toast" data-arg="מחסן השאלות · 78 שאלות פעילות">' + icon('database') + '<span>מחסן השאלות · 78 שאלות</span></button>' +
       '<button type="button" class="btn btn-quiet btn-block" style="justify-content:flex-start" data-act="print">' + icon('file-arrow-down') + '<span>דוח רבעוני להנהלה</span></button>' +
       '</div></div></div></div>';
+  };
+
+  /* 23 — בניית תוכנית הלימודים (רכז הדרכה) */
+  screens.curriculum = function (v) {
+    var CUR = curriculum();
+    var edited = !!state.curriculum;
+
+    function chapterRow(stageIdx, i, title, count) {
+      return '<div class="curline">' +
+        '<span class="curno">' + (stageIdx + 1) + '.' + (i + 1) + '</span>' +
+        '<input class="input" value="' + esc(title) + '" aria-label="שם הפרק"' +
+        ' data-cur="stages.' + stageIdx + '.chapters.' + i + '">' +
+        '<span class="row tight nowrap" style="gap:4px">' +
+        '<button type="button" class="iconbtn" aria-label="הזזה למעלה" ' + (i === 0 ? 'disabled ' : '') +
+        'data-act="curMove" data-arg="' + stageIdx + ':' + i + ':-1">' + icon('caret-up') + '</button>' +
+        '<button type="button" class="iconbtn" aria-label="הזזה למטה" ' + (i === count - 1 ? 'disabled ' : '') +
+        'data-act="curMove" data-arg="' + stageIdx + ':' + i + ':1">' + icon('caret-down') + '</button>' +
+        '<button type="button" class="iconbtn" aria-label="מחיקת הפרק" data-act="curRemove" data-arg="' + stageIdx + ':' + i + '">' +
+        icon('x') + '</button></span></div>';
+    }
+
+    function trackRow(key, i, title, count) {
+      return '<div class="curline">' +
+        '<span class="curno">' + (i + 1) + '</span>' +
+        '<input class="input" value="' + esc(title) + '" aria-label="שם הפרק"' +
+        ' data-cur="tracks.' + key + '.chapters.' + i + '">' +
+        '<span class="row tight nowrap" style="gap:4px">' +
+        '<button type="button" class="iconbtn" aria-label="מחיקת הפרק" data-act="curRemoveTrack" data-arg="' + key + ':' + i + '">' +
+        icon('x') + '</button></span></div>';
+    }
+
+    var h = '<div class="page narrow" style="gap:20px">' +
+      back('coordinator', 'חזרה לרכז ההדרכה') +
+      '<div class="row between" style="align-items:flex-end;gap:16px">' +
+      '<div class="stack s6"><h1 class="h1">בניית תוכנית הלימודים</h1>' +
+      '<div class="small muted">מה שנקבע כאן הוא המסלול שכל עובד רואה — השלבים, הפרקים, ומספר מבחני הפרק שהתעודה דורשת.</div></div>' +
+      (edited
+        ? '<button type="button" class="btn btn-quiet btn-sm" data-act="curReset">' + icon('clock-clockwise') + '<span>חזרה לתוכנית המקורית</span></button>'
+        : '<span class="tag neutral">התוכנית המקורית</span>') +
+      '</div>' +
+
+      '<div class="notice quiet">' + icon('shield-check', 'ok') +
+      '<span>שינוי התוכנית משפיע על כל הלומדים. פרק שנמחק — המבחן שכבר הוגש עליו נשאר בתיק.</span></div>';
+
+    // stages
+    h += '<div class="stack s16">';
+    CUR.stages.forEach(function (st, si) {
+      var list = st.byTrack ? [] : (st.chapters || []);
+      h += '<div class="card pad stack s12">' +
+        '<div class="row between"><span class="kicker">שלב ' + (si + 1) + '</span>' +
+        (CUR.stages.length > 1
+          ? '<button type="button" class="btn-link" data-act="curRemoveStage" data-arg="' + si + '">מחיקת השלב</button>'
+          : '') + '</div>' +
+        '<div class="grid-fields sm">' +
+        field('שם השלב', '<input class="input" value="' + esc(st.title) + '" data-cur="stages.' + si + '.title">') +
+        field('טווח ימים', '<input class="input" value="' + esc(st.days) + '" data-cur="stages.' + si + '.days">') +
+        '</div>' +
+        field('שורת השעות', '<input class="input" value="' + esc(st.hours) + '" data-cur="stages.' + si + '.hours">');
+
+      if (st.byTrack) {
+        h += '<div class="notice">' + icon('gift') +
+          '<span>השלב הזה נקבע לפי האגף של העובד — הפרקים שלו נערכים למטה, בשני המסלולים.</span></div>';
+      } else {
+        h += '<div class="stack s8">' +
+          '<span class="small muted">פרקים · ' + list.length + '</span>' +
+          (list.length
+            ? list.map(function (t, i) { return chapterRow(si, i, t, list.length); }).join('')
+            : '<div class="small muted">אין פרקים בשלב הזה — עובד יעבור אותו בלי מבחן.</div>') +
+          '<button type="button" class="uploadbtn" data-act="curAdd" data-arg="' + si + '">' +
+          icon('plus') + '<span>הוספת פרק</span></button></div>';
+      }
+      h += '</div>';
+    });
+    h += '<button type="button" class="btn btn-quiet" style="align-self:flex-start" data-act="curAddStage">' +
+      icon('plus') + '<span>הוספת שלב</span></button></div>';
+
+    // department tracks
+    h += '<div class="stack s16">' +
+      '<div class="h2">מסלולי האגפים</div>' +
+      ['head', 'ptsd'].map(function (key) {
+        var tr = CUR.tracks[key];
+        var list = tr.chapters || [];
+        return '<div class="card pad stack s12">' +
+          '<div class="grid-fields sm">' +
+          field('שם האגף', '<input class="input" value="' + esc(tr.name) + '" data-cur="tracks.' + key + '.name">') +
+          field('תיאור קצר', '<input class="input" value="' + esc(tr.blurb || '') + '" data-cur="tracks.' + key + '.blurb">') +
+          '</div>' +
+          '<div class="stack s8"><span class="small muted">פרקים · ' + list.length + '</span>' +
+          list.map(function (t, i) { return trackRow(key, i, t, list.length); }).join('') +
+          '<button type="button" class="uploadbtn" data-act="curAddTrack" data-arg="' + key + '">' +
+          icon('plus') + '<span>הוספת פרק</span></button></div></div>';
+      }).join('') + '</div>';
+
+    // targets
+    h += '<div class="card pad stack s12">' +
+      '<span class="h4">תנאי התעודה</span>' +
+      '<div class="grid-fields sm">' +
+      field('שעות פרקטיקה נדרשות', '<input class="input" type="number" min="0" value="' + esc(CUR.practiceTarget) + '" data-cur="practiceTarget">') +
+      field('שעות המשך בשנה', '<input class="input" type="number" min="0" value="' + esc(CUR.ceTarget) + '" data-cur="ceTarget">') +
+      field('שאלות במבחן המסכם', '<input class="input" type="number" min="1" value="' + esc(CUR.finalQuestions) + '" data-cur="finalQuestions">') +
+      field('שאלות בכל מבחן פרק', '<input class="input" type="number" min="1" value="' + esc(CUR.chapterQuestions) + '" data-cur="chapterQuestions">') +
+      '</div>' +
+      '<div class="condrow">' + icon('certificate', 'ok') +
+      '<span>לפי התוכנית הזו התעודה דורשת <strong>' + v.totalChapters + '</strong> מבחני פרק עם משוב, ' +
+      'מבחן מסכם, ו-<strong>' + v.practiceTarget + '</strong> שעות פרקטיקה מאושרות.</span></div>' +
+      '</div>';
+
+    h += '<div class="row"><button type="button" class="btn btn-primary btn-lg" data-act="curDone">' +
+      icon('check') + '<span>סיימתי</span></button>' +
+      '<span class="tiny muted">השינויים נשמרים תוך כדי עריכה.</span></div>';
+
+    return h + '</div>';
   };
 
   /* --------------------------------------------------------------- actions */
@@ -2967,6 +3183,67 @@ window.ICONS = {
       toast('הערת הסיכום נשמרה בתיק');
     },
 
+    /* -------------------------------------------------- curriculum builder */
+
+    curAdd: function (arg) {
+      var c = editableCurriculum();
+      c.stages[Number(arg)].chapters.push('פרק חדש');
+      set({}, { top: false });
+    },
+
+    curRemove: function (arg) {
+      var p = arg.split(':'), c = editableCurriculum();
+      c.stages[Number(p[0])].chapters.splice(Number(p[1]), 1);
+      set({});
+    },
+
+    curMove: function (arg) {
+      var p = arg.split(':'), c = editableCurriculum();
+      var list = c.stages[Number(p[0])].chapters;
+      var from = Number(p[1]), to = from + Number(p[2]);
+      if (to < 0 || to >= list.length) return;
+      var moved = list.splice(from, 1)[0];
+      list.splice(to, 0, moved);
+      set({});
+    },
+
+    curAddStage: function () {
+      var c = editableCurriculum();
+      c.stages.push({ title: 'שלב חדש', days: '', hours: '', chapters: ['פרק חדש'] });
+      set({});
+    },
+
+    curRemoveStage: function (arg) {
+      var c = editableCurriculum();
+      if (c.stages.length <= 1) { toast('חייב להישאר לפחות שלב אחד'); return; }
+      c.stages.splice(Number(arg), 1);
+      set({});
+    },
+
+    curAddTrack: function (arg) {
+      var c = editableCurriculum();
+      c.tracks[arg].chapters.push('פרק חדש');
+      set({});
+    },
+
+    curRemoveTrack: function (arg) {
+      var p = arg.split(':'), c = editableCurriculum();
+      c.tracks[p[0]].chapters.splice(Number(p[1]), 1);
+      set({});
+    },
+
+    curReset: function () {
+      state.curriculum = null;
+      save();
+      render();
+      toast('התוכנית חזרה למקור');
+    },
+
+    curDone: function () {
+      set({ screen: 'coordinator' }, { top: true });
+      toast('תוכנית הלימודים עודכנה');
+    },
+
     print: function () { window.print(); },
 
     account: function () { accountOpen = !accountOpen; render(); },
@@ -3033,6 +3310,7 @@ window.ICONS = {
     for (var i = 0; i < fields.length; i++) {
       var el = fields[i];
       if (el.getAttribute('data-bind')) continue;      // handled separately (the name field)
+      if (el.getAttribute('data-cur')) continue;       // the curriculum builder writes by path
       if (el.closest('.demobar')) continue;
       var key = fieldKey(v, el, seen);
       el.setAttribute('data-field', key);
@@ -3140,6 +3418,19 @@ window.ICONS = {
 
     var bound = el.getAttribute('data-bind');
     if (bound) { state[bound] = el.value; save(); return; }
+
+    var path = el.getAttribute('data-cur');
+    if (path) {
+      // Written without a re-render, so an edit never interrupts typing.
+      var c = editableCurriculum();
+      var parts = path.split('.');
+      var node = c;
+      for (var i = 0; i < parts.length - 1; i++) node = node[parts[i]];
+      var last = parts[parts.length - 1];
+      node[last] = el.type === 'number' ? (Number(el.value) || 0) : el.value;
+      save();
+      return;
+    }
 
     var key = el.getAttribute('data-field');
     if (!key) return;
