@@ -1,16 +1,21 @@
 'use strict';
-// Pure merge logic for a scoped (institute_<id> / staff_<id>) write to app_state.
-// This exact logic is mirrored verbatim into app-state-gateway/index.ts.
+// Pure merge logic for a scoped write to app_state. Mirrored verbatim into
+// app-state-gateway/index.ts. Start from the AUTHORITATIVE server blob S and apply
+// only what the given scoped role may change.
 //
-// Rule: start from the AUTHORITATIVE server blob S; apply only what a scoped role is
-// permitted to change. A scoped role can fully replace ONLY its own institute entry,
-// and may APPEND to shared feeds — it can never modify/delete another institute, edit
-// or remove others' messages/reports/history, or change national settings.
+// role: 'manager' (institute_<id>) or 'staff' (staff_<id>).
+//  - manager: full control of its own institute entry; add/edit/delete its own
+//    institute's general reports and history entries in place; append chat messages.
+//  - staff: only its own institute's pettyCashTransactions (and only if the institute
+//    still allows it via staffCanEditPettyCash), and may append (not edit/delete) its
+//    own general reports. Nothing else.
+// Neither role can ever touch another institute, edit/delete others' feed items, or
+// change national settings.
 
 function isObj(v) { return v && typeof v === 'object' && !Array.isArray(v); }
 
-// Append-only array union keyed by a field (e.g. 'id' or 'key'): keep every server
-// item as-is, then append client items whose key is not already present on the server.
+// Append-only array union keyed by a field: keep every server item, append client
+// items whose key isn't already present (optionally filtered by keepItem).
 function appendByKey(serverArr, clientArr, keyField, keepItem) {
   const out = Array.isArray(serverArr) ? serverArr.slice() : [];
   if (!Array.isArray(clientArr)) return out;
@@ -26,8 +31,7 @@ function appendByKey(serverArr, clientArr, keyField, keepItem) {
   return out;
 }
 
-// Append-only array union by deep-equality (for items without a stable id, e.g.
-// generalReports). keepItem can reject items that don't belong to the scope.
+// Append-only by deep-equality (items with no stable id); keepItem can reject items.
 function appendByEquality(serverArr, clientArr, keepItem) {
   const out = Array.isArray(serverArr) ? serverArr.slice() : [];
   if (!Array.isArray(clientArr)) return out;
@@ -43,65 +47,86 @@ function appendByEquality(serverArr, clientArr, keepItem) {
   return out;
 }
 
+// In-place "own slice": for a collection whose items carry instituteId, keep every
+// server item belonging to ANOTHER institute untouched, and replace the scope's own
+// slice with exactly what the client submitted for its own institute. This lets the
+// owner add / edit / delete its own items without duplication, and can never affect
+// another institute's items.
+function replaceOwnSlice(serverArr, clientArr, scope) {
+  const kept = (Array.isArray(serverArr) ? serverArr : []).filter((it) => !it || it.instituteId !== scope);
+  const mine = (Array.isArray(clientArr) ? clientArr : []).filter((it) => it && it.instituteId === scope);
+  return kept.concat(mine);
+}
+
 // Append-only object-map merge: keep every server key/value, add only client keys the
-// server doesn't already have (never overwrite or delete an existing key).
+// server doesn't already have.
 function appendKeys(serverMap, clientMap) {
   const out = isObj(serverMap) ? { ...serverMap } : {};
   if (!isObj(clientMap)) return out;
-  for (const k of Object.keys(clientMap)) {
-    if (!(k in out)) out[k] = clientMap[k];
-  }
+  for (const k of Object.keys(clientMap)) if (!(k in out)) out[k] = clientMap[k];
   return out;
 }
 
-// Merge presence (ephemeral "online now"): overlay client entries, drop nothing here
-// (stale pruning already happens client-side). Not sensitive.
 function mergePresence(serverP, clientP) {
   const out = isObj(serverP) ? { ...serverP } : {};
   if (isObj(clientP)) for (const k of Object.keys(clientP)) out[k] = clientP[k];
   return out;
 }
 
-// Build the blob to persist when a scoped role writes. S = current server blob,
-// C = client-submitted blob, instituteId = the scope from the token.
-function mergeScopedWrite(S, C, instituteId) {
+// Compute the scope's own institute entry after a write, applying the role's field
+// permissions. Returns the entry to store for that institute.
+function mergeOwnInstitute(sOwn, cOwn, role) {
+  if (!sOwn) return sOwn; // scope's institute must already exist; never created here
+  if (!cOwn || cOwn.id !== sOwn.id) return sOwn;
+  if (role === 'manager') return cOwn; // full control of own entry
+  // staff: only pettyCashTransactions, and only if the institute still allows it.
+  if (sOwn.staffCanEditPettyCash === false) return sOwn;
+  const next = { ...sOwn };
+  if (Array.isArray(cOwn.pettyCashTransactions)) next.pettyCashTransactions = cOwn.pettyCashTransactions;
+  return next;
+}
+
+function mergeScopedWrite(S, C, instituteId, role) {
   const server = isObj(S) ? S : {};
   const client = isObj(C) ? C : {};
-  // Start from an authoritative copy of the server blob so anything not explicitly
-  // permitted below is preserved exactly as the server has it.
   const R = JSON.parse(JSON.stringify(server));
+  const isManager = role === 'manager';
 
-  // institutes: replace ONLY the scope's own entry; every other institute stays as the
-  // server has it. Never add or remove institutes.
+  // institutes: change ONLY the scope's own entry, per role permissions.
   if (Array.isArray(server.institutes)) {
-    const own = Array.isArray(client.institutes)
-      ? client.institutes.find((i) => i && i.id === instituteId)
-      : null;
-    if (own && own.id === instituteId) {
-      R.institutes = server.institutes.map((i) => (i && i.id === instituteId ? own : i));
-    } else {
-      R.institutes = server.institutes;
-    }
+    const sOwn = server.institutes.find((i) => i && i.id === instituteId) || null;
+    const cOwn = Array.isArray(client.institutes) ? client.institutes.find((i) => i && i.id === instituteId) : null;
+    const newOwn = mergeOwnInstitute(sOwn, cOwn, role);
+    R.institutes = server.institutes.map((i) => (i && i.id === instituteId ? newOwn : i));
   }
 
-  // Shared feeds — append-only.
+  // messages: append-only by id for both roles (chat history is immutable; staff can't
+  // send anyway, so this is a no-op for them).
   R.messages = appendByKey(server.messages, client.messages, 'id');
-  R.generalReports = appendByEquality(server.generalReports, client.generalReports,
-    (r) => r && r.instituteId === instituteId); // may only file reports for own institute
-  R.historyEvents = appendByKey(server.historyEvents, client.historyEvents, 'key');
-  R.procurementHistoryEvents = appendByKey(server.procurementHistoryEvents, client.procurementHistoryEvents, 'key');
 
-  // Shared maps — append-only keys.
+  // generalReports / history feeds (carry instituteId):
+  //  - manager: manage own slice in place (add/edit/delete own; others preserved).
+  //  - staff: may only APPEND own-institute reports; history feeds preserved untouched.
+  if (isManager) {
+    R.generalReports = replaceOwnSlice(server.generalReports, client.generalReports, instituteId);
+    R.historyEvents = replaceOwnSlice(server.historyEvents, client.historyEvents, instituteId);
+    R.procurementHistoryEvents = replaceOwnSlice(server.procurementHistoryEvents, client.procurementHistoryEvents, instituteId);
+  } else {
+    R.generalReports = appendByEquality(server.generalReports, client.generalReports, (r) => r && r.instituteId === instituteId);
+    R.historyEvents = Array.isArray(server.historyEvents) ? server.historyEvents : [];
+    R.procurementHistoryEvents = Array.isArray(server.procurementHistoryEvents) ? server.procurementHistoryEvents : [];
+  }
+
+  // Shared maps — append-only keys (never overwrite/delete an existing key).
   R.taskJournals = appendKeys(server.taskJournals, client.taskJournals);
   R.threadReadCounts = appendKeys(server.threadReadCounts, client.threadReadCounts);
 
-  // Presence — ephemeral, overlay.
+  // Presence — ephemeral overlay.
   R.presence = mergePresence(server.presence, client.presence);
 
   // Everything else (nationalManagerName/Phone, yearlyArchives, lastYearCloseSnapshot,
-  // lastArchiveYear, and any field not handled above) is left exactly as the server
-  // had it — a scoped role can never change national settings or archives.
+  // lastArchiveYear, any unknown field) stays exactly as the server had it.
   return R;
 }
 
-module.exports = { mergeScopedWrite, appendByKey, appendByEquality, appendKeys };
+module.exports = { mergeScopedWrite, appendByKey, appendByEquality, appendKeys, replaceOwnSlice, mergeOwnInstitute };
