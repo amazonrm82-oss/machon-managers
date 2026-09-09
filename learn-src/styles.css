@@ -1011,12 +1011,13 @@ button.avatar:hover { background: var(--color-accent-300); }
 }
 .accountmenu .who .n { font-size: 14px; }
 .accountmenu .who .e { font-size: 12px; color: var(--color-neutral-700); word-break: break-all; }
-.accountmenu button {
+.accountmenu button, .accountmenu a {
   display: flex; align-items: center; gap: 10px;
   border: 0; background: transparent; cursor: pointer;
   font-size: 14px; color: var(--color-neutral-900);
   padding: 10px 12px; min-height: 40px; border-radius: var(--radius-sm);
   text-align: start;
 }
-.accountmenu button:hover { background: var(--color-accent-100); color: var(--color-accent-800); }
-.accountmenu button svg.i { font-size: 17px; color: var(--color-neutral-700); }
+.accountmenu button:hover, .accountmenu a:hover { background: var(--color-accent-100); color: var(--color-accent-800); }
+.accountmenu a { text-decoration: none; }
+.accountmenu button svg.i, .accountmenu a svg.i { font-size: 17px; color: var(--color-neutral-700); }

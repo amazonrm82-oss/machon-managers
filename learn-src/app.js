@@ -430,7 +430,7 @@
       : (currentUser && currentUser.via === 'demo' ? 'מצב הדגמה · ללא התחברות' : 'מחובר/ת מקומית');
     return '<div class="accountmenu" role="menu">' +
       '<div class="who"><span class="n">' + esc(v.name) + '</span><span class="e">' + who + '</span></div>' +
-      '<button type="button" role="menuitem" data-act="portal">' + icon('house') + '<span>בחירת מערכת</span></button>' +
+      '<a role="menuitem" href="./">' + icon('house') + '<span>בחירת מערכת</span></a>' +
       '<button type="button" role="menuitem" data-act="signOut">' + icon('x') + '<span>יציאה</span></button>' +
       '</div>';
   }
@@ -1633,8 +1633,6 @@
       if (authApi && authApi.signOut) authApi.signOut();
       else location.reload();
     },
-
-    portal: function () { location.href = './'; },
 
     toast: function (arg) { toast(arg); }
   };
