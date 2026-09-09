@@ -11,10 +11,15 @@
 // "שלב 3"). This function requires a real session token (minted by role-auth on a
 // successful password check) for every action.
 //
-// Scope note (same as app-state-gateway): this only closes off callers who never
-// logged in at all. It does NOT yet enforce that institute manager X can only touch
-// institute X's projects — every logged-in role can still reach every row, exactly
-// as before. Per-institute scoping is a separate, larger follow-up.
+// PER-INSTITUTE ISOLATION (שלב 4א): the token carries the roleKey it was minted for.
+// For an institute-scoped role — institute_<id> (מנהל מכון) or staff_<id> (צוות מכון) —
+// every action here is constrained to that one institute: it can only list, create,
+// edit or delete projects/tasks/updates/documents whose project belongs to <id>, and
+// cannot create a project in, or move one to, another institute. Org-wide roles
+// (national / president / budgetManager / buildingManager) are unconstrained, exactly
+// as before. push_subscriptions is per-device, not per-institute, so it is never
+// scoped. This closes cross-institute access for the projects tables; the equivalent
+// for app_state (budgets/salaries/employees) is a separate step.
 //
 // Deploy with: supabase functions deploy projects-gateway
 // See ../../../SECURITY_FIX_README.md for the full migration + deploy steps.
@@ -60,21 +65,31 @@ async function hmacKey(): Promise<CryptoKey> {
 }
 
 // Verifies a token minted by role-auth's issueToken (payloadB64.signatureB64,
-// HMAC-SHA256 over payloadB64, with an exp claim). Identical logic to
-// app-state-gateway.verifyToken.
-async function verifyToken(token: string): Promise<boolean> {
-  if (!TOKEN_SECRET || !token) return false;
+// HMAC-SHA256 over payloadB64, with an exp claim) and returns the decoded payload
+// (so callers can read roleKey), or null if the token is missing/forged/expired.
+async function verifyToken(token: string): Promise<{ roleKey?: string; exp?: number } | null> {
+  if (!TOKEN_SECRET || !token) return null;
   const parts = token.split('.');
-  if (parts.length !== 2) return false;
+  if (parts.length !== 2) return null;
   const [payloadB64, sigB64] = parts;
   try {
     const valid = await crypto.subtle.verify('HMAC', await hmacKey(), b64urlDecode(sigB64).buffer as ArrayBuffer, new TextEncoder().encode(payloadB64));
-    if (!valid) return false;
+    if (!valid) return null;
     const payload = JSON.parse(new TextDecoder().decode(b64urlDecode(payloadB64)));
-    return typeof payload?.exp === 'number' && payload.exp > Math.floor(Date.now() / 1000);
+    if (typeof payload?.exp !== 'number' || payload.exp <= Math.floor(Date.now() / 1000)) return null;
+    return payload;
   } catch {
-    return false;
+    return null;
   }
+}
+
+// The institute a token is confined to, or null for an org-wide role that may reach
+// every institute. institute_<id> and staff_<id> are the only scoped roles.
+function scopeOf(payload: { roleKey?: string } | null): string | null {
+  const rk = payload?.roleKey || '';
+  if (rk.startsWith('institute_')) return rk.slice('institute_'.length);
+  if (rk.startsWith('staff_')) return rk.slice('staff_'.length);
+  return null;
 }
 
 function rows(data: unknown) {
@@ -83,6 +98,22 @@ function rows(data: unknown) {
 
 function str(v: unknown): string {
   return typeof v === 'string' ? v : '';
+}
+
+// Which institute a given project belongs to (null if it doesn't exist).
+async function projectInstitute(id: string): Promise<string | null> {
+  if (!id) return null;
+  const { data } = await supabase.from('projects').select('institute_id').eq('id', id).maybeSingle();
+  return data ? (data.institute_id ?? null) : null;
+}
+
+// Which institute the project owning a row in `table` (project_tasks / project_updates
+// / project_documents, all of which have a project_id) belongs to.
+async function ownerInstitute(table: string, id: string): Promise<string | null> {
+  if (!id) return null;
+  const { data } = await supabase.from(table).select('project_id').eq('id', id).maybeSingle();
+  if (!data) return null;
+  return await projectInstitute(str(data.project_id));
 }
 
 Deno.serve(async (req: Request) => {
@@ -99,47 +130,66 @@ Deno.serve(async (req: Request) => {
   const action = body?.action;
 
   // Every action requires a valid session token — there is no public action here.
-  if (!(await verifyToken(String(body?.token || '')))) {
-    return json({ ok: false, error: 'invalid_token' }, 401);
-  }
+  const payload = await verifyToken(String(body?.token || ''));
+  if (!payload) return json({ ok: false, error: 'invalid_token' }, 401);
+
+  // null => org-wide role (unconstrained); a string => confined to that institute.
+  const scope = scopeOf(payload);
+  const forbidden = () => json({ ok: false, error: 'forbidden' }, 403);
 
   try {
     switch (action) {
       // ---- projects ----
       case 'listProjectsByInstitute': {
+        // A scoped role may only ever list its own institute, whatever it asked for.
+        const instituteId = scope ?? str(body.instituteId);
         const { data, error } = await supabase.from('projects')
           .select(PROJECT_SELECT)
-          .eq('institute_id', str(body.instituteId))
+          .eq('institute_id', instituteId)
           .order('created_at', { ascending: false });
         if (error) throw error;
         return rows(data);
       }
       case 'projectCounts': {
-        const { data, error } = await supabase.from('projects').select('institute_id');
+        let q = supabase.from('projects').select('institute_id');
+        if (scope) q = q.eq('institute_id', scope);
+        const { data, error } = await q;
         if (error) throw error;
         return rows(data);
       }
       case 'listProjectsOverview': {
         let q = supabase.from('projects').select(PROJECT_SELECT);
-        if (str(body.instituteId)) q = q.eq('institute_id', str(body.instituteId));
+        const instituteId = scope ?? str(body.instituteId);
+        if (instituteId) q = q.eq('institute_id', instituteId);
         const { data, error } = await q.order('target_date', { ascending: true, nullsFirst: false });
         if (error) throw error;
         return rows(data);
       }
       case 'insertProject': {
         if (!body?.row || typeof body.row !== 'object') return json({ ok: false, error: 'bad_request' }, 400);
-        const { error } = await supabase.from('projects').insert(body.row);
+        const row = { ...body.row };
+        // A scoped role can only create inside its own institute — force it.
+        if (scope) row.institute_id = scope;
+        const { error } = await supabase.from('projects').insert(row);
         if (error) throw error;
         return json({ ok: true });
       }
       case 'updateProject': {
         if (!str(body.id) || !body?.patch || typeof body.patch !== 'object') return json({ ok: false, error: 'bad_request' }, 400);
-        const { error } = await supabase.from('projects').update(body.patch).eq('id', str(body.id));
+        const patch = { ...body.patch };
+        if (scope) {
+          if ((await projectInstitute(str(body.id))) !== scope) return forbidden();
+          // Never let a scoped role move a project to another institute.
+          delete patch.institute_id;
+          delete patch.institute_name;
+        }
+        const { error } = await supabase.from('projects').update(patch).eq('id', str(body.id));
         if (error) throw error;
         return json({ ok: true });
       }
       case 'deleteProject': {
         if (!str(body.id)) return json({ ok: false, error: 'bad_request' }, 400);
+        if (scope && (await projectInstitute(str(body.id))) !== scope) return forbidden();
         const { error } = await supabase.from('projects').delete().eq('id', str(body.id));
         if (error) throw error;
         return json({ ok: true });
@@ -147,6 +197,7 @@ Deno.serve(async (req: Request) => {
 
       // ---- project_tasks ----
       case 'listTasksByProject': {
+        if (scope && (await projectInstitute(str(body.projectId))) !== scope) return rows([]);
         const { data, error } = await supabase.from('project_tasks')
           .select('*')
           .eq('project_id', str(body.projectId))
@@ -160,28 +211,34 @@ Deno.serve(async (req: Request) => {
           .eq('assignee', str(body.assignee))
           .order('due_date', { ascending: true, nullsFirst: false });
         if (error) throw error;
-        return rows(data);
+        // Confine a scoped role to tasks whose project is in its own institute.
+        const out = scope ? (data || []).filter((t: any) => t?.projects?.institute_id === scope) : data;
+        return rows(out);
       }
       case 'insertTask': {
         if (!body?.row || typeof body.row !== 'object') return json({ ok: false, error: 'bad_request' }, 400);
+        if (scope && (await projectInstitute(str(body.row.project_id))) !== scope) return forbidden();
         const { error } = await supabase.from('project_tasks').insert(body.row);
         if (error) throw error;
         return json({ ok: true });
       }
       case 'updateTask': {
         if (!str(body.id) || !body?.patch || typeof body.patch !== 'object') return json({ ok: false, error: 'bad_request' }, 400);
+        if (scope && (await ownerInstitute('project_tasks', str(body.id))) !== scope) return forbidden();
         const { error } = await supabase.from('project_tasks').update(body.patch).eq('id', str(body.id));
         if (error) throw error;
         return json({ ok: true });
       }
       case 'deleteTask': {
         if (!str(body.id)) return json({ ok: false, error: 'bad_request' }, 400);
+        if (scope && (await ownerInstitute('project_tasks', str(body.id))) !== scope) return forbidden();
         const { error } = await supabase.from('project_tasks').delete().eq('id', str(body.id));
         if (error) throw error;
         return json({ ok: true });
       }
       case 'deleteTasksByProject': {
         if (!str(body.projectId)) return json({ ok: false, error: 'bad_request' }, 400);
+        if (scope && (await projectInstitute(str(body.projectId))) !== scope) return forbidden();
         const { error } = await supabase.from('project_tasks').delete().eq('project_id', str(body.projectId));
         if (error) throw error;
         return json({ ok: true });
@@ -189,6 +246,7 @@ Deno.serve(async (req: Request) => {
 
       // ---- project_updates ----
       case 'listUpdatesByProject': {
+        if (scope && (await projectInstitute(str(body.projectId))) !== scope) return rows([]);
         const { data, error } = await supabase.from('project_updates')
           .select('*')
           .eq('project_id', str(body.projectId))
@@ -198,6 +256,7 @@ Deno.serve(async (req: Request) => {
       }
       case 'insertUpdate': {
         if (!body?.row || typeof body.row !== 'object') return json({ ok: false, error: 'bad_request' }, 400);
+        if (scope && (await projectInstitute(str(body.row.project_id))) !== scope) return forbidden();
         const { error } = await supabase.from('project_updates').insert(body.row);
         if (error) throw error;
         return json({ ok: true });
@@ -205,6 +264,7 @@ Deno.serve(async (req: Request) => {
 
       // ---- project_documents ----
       case 'listDocsByProject': {
+        if (scope && (await projectInstitute(str(body.projectId))) !== scope) return rows([]);
         const { data, error } = await supabase.from('project_documents')
           .select('*')
           .eq('project_id', str(body.projectId))
@@ -214,18 +274,22 @@ Deno.serve(async (req: Request) => {
       }
       case 'insertDoc': {
         if (!body?.row || typeof body.row !== 'object') return json({ ok: false, error: 'bad_request' }, 400);
+        if (scope && (await projectInstitute(str(body.row.project_id))) !== scope) return forbidden();
         const { error } = await supabase.from('project_documents').insert(body.row);
         if (error) throw error;
         return json({ ok: true });
       }
       case 'deleteDoc': {
         if (!str(body.id)) return json({ ok: false, error: 'bad_request' }, 400);
+        if (scope && (await ownerInstitute('project_documents', str(body.id))) !== scope) return forbidden();
         const { error } = await supabase.from('project_documents').delete().eq('id', str(body.id));
         if (error) throw error;
         return json({ ok: true });
       }
 
       // ---- push_subscriptions (called from index.html) ----
+      // Per-device, not per-institute — any logged-in role may register/unregister its
+      // own browser's push endpoint, so these are never institute-scoped.
       case 'upsertPushSubscription': {
         if (!body?.row || typeof body.row !== 'object' || !str(body.row.endpoint)) return json({ ok: false, error: 'bad_request' }, 400);
         const { error } = await supabase.from('push_subscriptions').upsert(body.row, { onConflict: 'endpoint' });
