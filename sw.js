@@ -24,16 +24,16 @@ self.addEventListener('push', (event) => {
   try {
     if (event.data) payload = { ...payload, ...event.data.json() };
   } catch (e) { /* ignore malformed payloads */ }
-  event.waitUntil(
-    self.registration.showNotification(payload.title, {
-      body: payload.body,
-      icon: 'icon-192.png',
-      badge: 'icon-192.png',
-      dir: 'rtl',
-      lang: 'he',
-      data: { url: payload.url || './' },
-    })
-  );
+  const opts = {
+    body: payload.body,
+    icon: 'icon-192.png',
+    badge: 'icon-192.png',
+    dir: 'rtl',
+    lang: 'he',
+    data: { url: payload.url || './' },
+  };
+  if (payload.tag) opts.tag = payload.tag;   // collapse repeats (e.g. registrations)
+  event.waitUntil(self.registration.showNotification(payload.title, opts));
 });
 
 self.addEventListener('notificationclick', (event) => {

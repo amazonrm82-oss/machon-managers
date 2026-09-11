@@ -12,6 +12,7 @@
 // Deploy with: supabase functions deploy learn-auth
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
+import { sendWebPush } from './webpush.ts';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -21,6 +22,10 @@ const CORS_HEADERS = {
 
 const TOKEN_SECRET = Deno.env.get('LEARN_TOKEN_SECRET') || '';
 const ADMIN_EMAIL = (Deno.env.get('LEARN_ADMIN_EMAIL') || '').trim().toLowerCase();
+const VAPID_PUBLIC = (Deno.env.get('LEARN_VAPID_PUBLIC') || '').trim();
+const VAPID_PRIVATE = (Deno.env.get('LEARN_VAPID_PRIVATE') || '').trim();
+const VAPID_SUBJECT = (Deno.env.get('LEARN_VAPID_SUBJECT') || 'mailto:admin@icelp.org.il').trim();
+const PUSH_ENABLED = !!(VAPID_PUBLIC && VAPID_PRIVATE);
 const TOKEN_TTL = 12 * 60 * 60;          // 12h sessions
 const PBKDF2_ITER = 210000;              // OWASP-recommended for PBKDF2-HMAC-SHA256
 const MIN_PASSWORD = 8;
@@ -115,11 +120,35 @@ function randomId(): string {
 
 /* ------------------------------------------------------------- admin notify */
 
-// In-app notification is simply the pending list the admin sees on sign-in.
-// Phone push, when VAPID is configured, is layered on here later; for now we
-// record the intent by keeping the account pending, which the admin's badge
-// reflects. (Push delivery is a follow-up — see the deploy notes.)
-async function notifyAdminsOfRegistration(_acct: any) { /* in-app badge covers this today */ }
+// Notify the administrator of a new pending registration. In-app: the pending
+// list / badge the admin sees on sign-in. Phone: a Web Push to each device the
+// admin has registered — sent only when VAPID secrets are configured. Dead
+// endpoints (404/410) are pruned. Push failures never fail the registration.
+async function notifyAdminsOfRegistration(acct: any) {
+  if (!PUSH_ENABLED) return;
+  try {
+    const { data: admins } = await db.from('learning_accounts').select('id').eq('is_admin', true).eq('status', 'approved');
+    const adminIds = (admins ?? []).map((a: any) => a.id);
+    if (!adminIds.length) return;
+    const { data: subs } = await db.from('learning_push').select('endpoint, subscription').in('user_id', adminIds);
+    if (!subs?.length) return;
+    const payload = JSON.stringify({
+      title: 'הרשמה חדשה למערכת הלמידה',
+      body: `${acct.full_name || 'משתמש חדש'} (${acct.role || 'ללא תפקיד'}) ממתין לאישור`,
+      url: '/machon-managers/learn.html',
+      tag: 'learn-registration',
+    });
+    const vapid = { publicKey: VAPID_PUBLIC, privateKey: VAPID_PRIVATE, subject: VAPID_SUBJECT };
+    await Promise.all((subs as any[]).map(async (row) => {
+      try {
+        const res = await sendWebPush(row.subscription, payload, vapid);
+        if (res.gone) await db.from('learning_push').delete().eq('endpoint', row.endpoint);
+      } catch (e) { console.error('push send failed:', e); }
+    }));
+  } catch (e) {
+    console.error('notifyAdminsOfRegistration failed:', e);
+  }
+}
 
 /* ----------------------------------------------------------------- handler */
 
@@ -133,6 +162,12 @@ Deno.serve(async (req: Request) => {
   const action = String(body?.action || '');
 
   try {
+    // Public config: lets the client fetch the VAPID public key (not a secret)
+    // so it can subscribe for push. Empty string when push isn't configured.
+    if (action === 'config') {
+      return json({ ok: true, vapidPublic: PUSH_ENABLED ? VAPID_PUBLIC : '', pushEnabled: PUSH_ENABLED });
+    }
+
     if (action === 'register') {
       const email = normalizeEmail(body.email);
       const fullName = String(body.fullName || '').trim();

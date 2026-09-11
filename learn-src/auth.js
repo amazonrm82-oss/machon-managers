@@ -316,6 +316,7 @@
     adminBar.className = 'fp-admin-bar';
     adminBar.innerHTML =
       '<button type="button" class="fp-admin-toggle">אישור הרשמות <span class="fp-admin-badge" hidden>0</span></button>' +
+      '<button type="button" class="fp-admin-push" hidden></button>' +
       '<div class="fp-admin-panel" hidden></div>';
     document.body.appendChild(adminBar);
     adminBar.querySelector('.fp-admin-toggle').addEventListener('click', function () {
@@ -323,8 +324,73 @@
       p.hidden = !p.hidden;
       if (!p.hidden) refreshPending(true);
     });
+    setupPushButton(token);
     var n = await refreshPending(false);
     if (n > 0) { adminBar.querySelector('.fp-admin-panel').hidden = false; refreshPending(true); }
+  }
+
+  /* -------------------------------------------- admin: phone push (Web Push)
+
+     A single button in the admin bar lets the administrator turn on phone
+     notifications. Subscribing needs a user gesture (the click) and HTTPS; the
+     VAPID public key comes from the server's `config` action. Each new pending
+     registration then triggers a Web Push from learn-auth to every device the
+     admin subscribed. If push isn't configured on the server, the button stays
+     hidden and the in-app badge alone carries the notification. */
+
+  var pushCfg = null;
+  function pushSupported() {
+    return ('serviceWorker' in navigator) && ('PushManager' in window) && ('Notification' in window) && location.protocol === 'https:';
+  }
+  function urlB64ToU8(b64) {
+    var pad = '='.repeat((4 - (b64.length % 4)) % 4);
+    var raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+    var out = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+  async function getPushConfig() {
+    if (pushCfg) return pushCfg;
+    var r = await la('config');
+    pushCfg = (r && r.ok) ? r : { pushEnabled: false, vapidPublic: '' };
+    return pushCfg;
+  }
+  async function existingSubscription() {
+    try {
+      var reg = await navigator.serviceWorker.getRegistration();
+      if (reg) return await reg.pushManager.getSubscription();
+    } catch (e) { /* ignore */ }
+    return null;
+  }
+  async function setupPushButton(token) {
+    if (!adminBar) return;
+    var btn = adminBar.querySelector('.fp-admin-push');
+    if (!btn) return;
+    var cfg = await getPushConfig();
+    if (!cfg.pushEnabled || !cfg.vapidPublic || !pushSupported() || Notification.permission === 'denied') return;
+    var already = await existingSubscription();
+    if (already) { btn.textContent = '🔔 התראות לנייד פעילות'; btn.hidden = false; btn.disabled = true; return; }
+    btn.textContent = '🔔 הפעל התראות לנייד';
+    btn.hidden = false;
+    btn.addEventListener('click', function () { enablePush(token, btn); });
+  }
+  async function enablePush(token, btn) {
+    btn.disabled = true;
+    try {
+      var cfg = await getPushConfig();
+      if (!cfg.pushEnabled || !cfg.vapidPublic) { btn.textContent = 'התראות לנייד לא זמינות'; return; }
+      var perm = await Notification.requestPermission();
+      if (perm !== 'granted') { btn.textContent = 'ההרשאה נדחתה'; btn.disabled = false; return; }
+      var reg = await navigator.serviceWorker.register('sw.js');
+      await navigator.serviceWorker.ready;
+      var sub = await reg.pushManager.getSubscription();
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToU8(cfg.vapidPublic) });
+      var r = await la('registerPush', { token: token, subscription: sub.toJSON() });
+      if (r && r.ok) { btn.textContent = '🔔 התראות לנייד פעילות'; }
+      else { btn.textContent = 'הרישום נכשל — נסה/י שוב'; btn.disabled = false; }
+    } catch (e) {
+      btn.textContent = 'הפעלת התראות נכשלה'; btn.disabled = false;
+    }
   }
   function removeAdminBarDom() { var e = document.querySelector('.fp-admin-bar'); if (e && e !== adminBar) e.remove(); }
 
