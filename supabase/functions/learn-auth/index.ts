@@ -176,8 +176,12 @@ async function encryptPushPayload(subscription: PushSubscription, payloadStr: st
   const hdr = u8concat(salt, new Uint8Array([(rs >>> 24) & 255, (rs >>> 16) & 255, (rs >>> 8) & 255, rs & 255]), new Uint8Array([asPublicRaw.length]), asPublicRaw);
   return u8concat(hdr, ct);
 }
-// Send one push. `gone` (404/410) means the endpoint is dead and should be dropped.
-async function sendWebPush(subscription: PushSubscription, payloadStr: string, vapid: { publicKey: string; privateKey: string; subject: string }): Promise<{ ok: boolean; status: number; gone: boolean }> {
+// Send one push. `gone` (404/410) means the endpoint is dead and should be
+// dropped. On failure the push service's response text is returned (truncated)
+// so the exact reason is visible. Note: no Content-Type header — for aes128gcm
+// the body is self-describing via Content-Encoding, and some services reject an
+// explicit Content-Type.
+async function sendWebPush(subscription: PushSubscription, payloadStr: string, vapid: { publicKey: string; privateKey: string; subject: string }): Promise<{ ok: boolean; status: number; gone: boolean; body: string }> {
   const audience = new URL(subscription.endpoint).origin;
   const jwt = await buildVapidJwt(audience, vapid.subject, vapid.publicKey, vapid.privateKey);
   const body = await encryptPushPayload(subscription, payloadStr);
@@ -186,12 +190,14 @@ async function sendWebPush(subscription: PushSubscription, payloadStr: string, v
     headers: {
       'TTL': '86400',
       'Content-Encoding': 'aes128gcm',
-      'Content-Type': 'application/octet-stream',
       'Authorization': `vapid t=${jwt}, k=${vapid.publicKey}`,
     },
     body,
   });
-  return { ok: res.ok, status: res.status, gone: res.status === 404 || res.status === 410 };
+  let text = '';
+  if (!res.ok) { try { text = (await res.text()).slice(0, 300); } catch { /* ignore */ } }
+  else { try { await res.arrayBuffer(); } catch { /* drain */ } }
+  return { ok: res.ok, status: res.status, gone: res.status === 404 || res.status === 410, body: text };
 }
 
 /* ------------------------------------------------------------- admin notify */
@@ -203,8 +209,8 @@ async function sendWebPush(subscription: PushSubscription, payloadStr: string, v
 // Send a push to every device the administrator(s) registered. Returns a small
 // diagnostic summary (counts + per-send status) with no secrets — safe to log
 // and to return to an admin. Dead endpoints (404/410) are pruned.
-async function pushToAdmins(payloadObj: Record<string, unknown>): Promise<{ admins: number; subs: number; results: { status: number; ok: boolean }[] }> {
-  const summary = { admins: 0, subs: 0, results: [] as { status: number; ok: boolean }[] };
+async function pushToAdmins(payloadObj: Record<string, unknown>): Promise<{ admins: number; subs: number; results: { status: number; ok: boolean; body?: string }[] }> {
+  const summary = { admins: 0, subs: 0, results: [] as { status: number; ok: boolean; body?: string }[] };
   if (!PUSH_ENABLED) return summary;
   const { data: admins } = await db.from('learning_accounts').select('id').eq('is_admin', true).eq('status', 'approved');
   const adminIds = (admins ?? []).map((a: any) => a.id);
@@ -218,11 +224,11 @@ async function pushToAdmins(payloadObj: Record<string, unknown>): Promise<{ admi
   await Promise.all((subs as any[]).map(async (row) => {
     try {
       const res = await sendWebPush(row.subscription, payload, vapid);
-      summary.results.push({ status: res.status, ok: res.ok });
-      if (!res.ok) console.error(`push send non-ok: status=${res.status} endpoint=${String(row.endpoint).slice(0, 60)}`);
+      summary.results.push({ status: res.status, ok: res.ok, body: res.ok ? undefined : res.body });
+      if (!res.ok) console.error(`push send non-ok: status=${res.status} body=${res.body} endpoint=${String(row.endpoint).slice(0, 60)}`);
       if (res.gone) await db.from('learning_push').delete().eq('endpoint', row.endpoint);
     } catch (e) {
-      summary.results.push({ status: 0, ok: false });
+      summary.results.push({ status: 0, ok: false, body: String(e).slice(0, 200) });
       console.error('push send threw:', e);
     }
   }));
