@@ -914,6 +914,9 @@ body.preview-phone .app { min-height: 780px; }
 .fp-logo img[hidden], .fp-logo-fallback[hidden] { display: none; }
 .fp-logo-fallback { display: flex; flex-direction: column; align-items: center; gap: 10px; }
 .fp-logo-fallback svg { width: 100%; height: auto; }
+/* The official logo already includes the institute name, so the separate
+   wordmark stays hidden — it only appears alongside the drawn-ring fallback. */
+.fp-wordmark[data-fallback-only] { display: none; }
 .fp-wordmark {
   font-family: var(--font-heading); font-size: 16px; font-weight: 500;
   color: var(--color-neutral-800); margin-top: -6px;
