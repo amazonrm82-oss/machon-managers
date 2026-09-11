@@ -100,9 +100,18 @@ function str(v: unknown): string {
   return typeof v === 'string' ? v : '';
 }
 
-// Which institute a given project belongs to (null if it doesn't exist).
+// Every id in this system (institute inst_…/__general__, project proj_…, task task_…,
+// update upd_…, document doc_…) is made of ASCII letters, digits and underscores. A
+// value that isn't shaped like one can never match a row, so we reject it before it
+// reaches PostgREST — a malformed filter value (e.g. one carrying quotes/semicolons)
+// would otherwise trip the query parser into a generic 500 instead of an empty result.
+function isId(v: unknown): boolean {
+  return typeof v === 'string' && /^[A-Za-z0-9_]{1,128}$/.test(v);
+}
+
+// Which institute a given project belongs to (null if it doesn't exist / bad id).
 async function projectInstitute(id: string): Promise<string | null> {
-  if (!id) return null;
+  if (!isId(id)) return null;
   const { data } = await supabase.from('projects').select('institute_id').eq('id', id).maybeSingle();
   return data ? (data.institute_id ?? null) : null;
 }
@@ -110,7 +119,7 @@ async function projectInstitute(id: string): Promise<string | null> {
 // Which institute the project owning a row in `table` (project_tasks / project_updates
 // / project_documents, all of which have a project_id) belongs to.
 async function ownerInstitute(table: string, id: string): Promise<string | null> {
-  if (!id) return null;
+  if (!isId(id)) return null;
   const { data } = await supabase.from(table).select('project_id').eq('id', id).maybeSingle();
   if (!data) return null;
   return await projectInstitute(str(data.project_id));
@@ -143,6 +152,7 @@ Deno.serve(async (req: Request) => {
       case 'listProjectsByInstitute': {
         // A scoped role may only ever list its own institute, whatever it asked for.
         const instituteId = scope ?? str(body.instituteId);
+        if (!isId(instituteId)) return rows([]);
         const { data, error } = await supabase.from('projects')
           .select(PROJECT_SELECT)
           .eq('institute_id', instituteId)
@@ -160,6 +170,7 @@ Deno.serve(async (req: Request) => {
       case 'listProjectsOverview': {
         let q = supabase.from('projects').select(PROJECT_SELECT);
         const instituteId = scope ?? str(body.instituteId);
+        if (instituteId && !isId(instituteId)) return rows([]);
         if (instituteId) q = q.eq('institute_id', instituteId);
         const { data, error } = await q.order('target_date', { ascending: true, nullsFirst: false });
         if (error) throw error;
@@ -175,7 +186,7 @@ Deno.serve(async (req: Request) => {
         return json({ ok: true });
       }
       case 'updateProject': {
-        if (!str(body.id) || !body?.patch || typeof body.patch !== 'object') return json({ ok: false, error: 'bad_request' }, 400);
+        if (!isId(str(body.id)) || !body?.patch || typeof body.patch !== 'object') return json({ ok: false, error: 'bad_request' }, 400);
         const patch = { ...body.patch };
         if (scope) {
           if ((await projectInstitute(str(body.id))) !== scope) return forbidden();
@@ -188,7 +199,7 @@ Deno.serve(async (req: Request) => {
         return json({ ok: true });
       }
       case 'deleteProject': {
-        if (!str(body.id)) return json({ ok: false, error: 'bad_request' }, 400);
+        if (!isId(str(body.id))) return json({ ok: false, error: 'bad_request' }, 400);
         if (scope && (await projectInstitute(str(body.id))) !== scope) return forbidden();
         const { error } = await supabase.from('projects').delete().eq('id', str(body.id));
         if (error) throw error;
@@ -197,6 +208,7 @@ Deno.serve(async (req: Request) => {
 
       // ---- project_tasks ----
       case 'listTasksByProject': {
+        if (!isId(str(body.projectId))) return rows([]);
         if (scope && (await projectInstitute(str(body.projectId))) !== scope) return rows([]);
         const { data, error } = await supabase.from('project_tasks')
           .select('*')
@@ -223,21 +235,21 @@ Deno.serve(async (req: Request) => {
         return json({ ok: true });
       }
       case 'updateTask': {
-        if (!str(body.id) || !body?.patch || typeof body.patch !== 'object') return json({ ok: false, error: 'bad_request' }, 400);
+        if (!isId(str(body.id)) || !body?.patch || typeof body.patch !== 'object') return json({ ok: false, error: 'bad_request' }, 400);
         if (scope && (await ownerInstitute('project_tasks', str(body.id))) !== scope) return forbidden();
         const { error } = await supabase.from('project_tasks').update(body.patch).eq('id', str(body.id));
         if (error) throw error;
         return json({ ok: true });
       }
       case 'deleteTask': {
-        if (!str(body.id)) return json({ ok: false, error: 'bad_request' }, 400);
+        if (!isId(str(body.id))) return json({ ok: false, error: 'bad_request' }, 400);
         if (scope && (await ownerInstitute('project_tasks', str(body.id))) !== scope) return forbidden();
         const { error } = await supabase.from('project_tasks').delete().eq('id', str(body.id));
         if (error) throw error;
         return json({ ok: true });
       }
       case 'deleteTasksByProject': {
-        if (!str(body.projectId)) return json({ ok: false, error: 'bad_request' }, 400);
+        if (!isId(str(body.projectId))) return json({ ok: false, error: 'bad_request' }, 400);
         if (scope && (await projectInstitute(str(body.projectId))) !== scope) return forbidden();
         const { error } = await supabase.from('project_tasks').delete().eq('project_id', str(body.projectId));
         if (error) throw error;
@@ -246,6 +258,7 @@ Deno.serve(async (req: Request) => {
 
       // ---- project_updates ----
       case 'listUpdatesByProject': {
+        if (!isId(str(body.projectId))) return rows([]);
         if (scope && (await projectInstitute(str(body.projectId))) !== scope) return rows([]);
         const { data, error } = await supabase.from('project_updates')
           .select('*')
@@ -264,6 +277,7 @@ Deno.serve(async (req: Request) => {
 
       // ---- project_documents ----
       case 'listDocsByProject': {
+        if (!isId(str(body.projectId))) return rows([]);
         if (scope && (await projectInstitute(str(body.projectId))) !== scope) return rows([]);
         const { data, error } = await supabase.from('project_documents')
           .select('*')
@@ -280,7 +294,7 @@ Deno.serve(async (req: Request) => {
         return json({ ok: true });
       }
       case 'deleteDoc': {
-        if (!str(body.id)) return json({ ok: false, error: 'bad_request' }, 400);
+        if (!isId(str(body.id))) return json({ ok: false, error: 'bad_request' }, 400);
         if (scope && (await ownerInstitute('project_documents', str(body.id))) !== scope) return forbidden();
         const { error } = await supabase.from('project_documents').delete().eq('id', str(body.id));
         if (error) throw error;
