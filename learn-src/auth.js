@@ -428,8 +428,11 @@
       } else if (r && r.ok && r.subs === 0) {
         btn.textContent = 'לא נמצא מנוי — הפעל/י שוב';
       } else {
-        var st = (r && r.results && r.results[0] && r.results[0].status) || (r && r.error) || '?';
+        var first = (r && r.results && r.results[0]) || {};
+        var st = first.status || (r && r.error) || '?';
         btn.textContent = 'השליחה נכשלה (' + st + ')';
+        // Surface the push service's message so the exact reason is visible.
+        if (first.body) { try { window.alert('פרטי שגיאת Push (' + st + '):\n' + first.body); } catch (e) { /* ignore */ } }
       }
     } catch (e) {
       btn.textContent = 'שגיאה בשליחה';
