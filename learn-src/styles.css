@@ -1098,3 +1098,24 @@ button.avatar:hover { background: var(--color-accent-300); }
 @media (hover: none), (max-width: 720px) {
   .curline .chapbtn { order: 3; flex: 1 1 auto; }
 }
+
+/* ------------------------------------------------------ sign-in / register gate */
+.fp-auth-tabs { display: flex; gap: 4px; margin-bottom: 18px; background: var(--color-neutral-200); border-radius: var(--radius-md); padding: 4px; }
+.fp-auth-tab { flex: 1; border: 0; background: transparent; padding: 9px 12px; border-radius: var(--radius-sm); font: inherit; font-weight: 600; color: var(--color-neutral-700); cursor: pointer; }
+.fp-auth-tab.on { background: #fff; color: var(--color-accent-800); box-shadow: var(--lift); }
+.fp-auth-form { display: flex; flex-direction: column; gap: 12px; text-align: right; }
+.fp-auth-form .field { display: flex; flex-direction: column; gap: 4px; }
+.fp-auth-form .btn-block { width: 100%; margin-top: 4px; }
+
+/* administrator's pending-approvals notification */
+.fp-admin-bar { position: fixed; inset-inline-end: 18px; bottom: calc(18px + var(--safe-bottom, 0px)); z-index: 9000; display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
+.fp-admin-toggle { border: 0; background: var(--color-accent); color: #fff; font: inherit; font-weight: 600; padding: 11px 16px; border-radius: 999px; box-shadow: var(--lift); cursor: pointer; display: inline-flex; align-items: center; gap: 8px; }
+.fp-admin-badge { background: var(--color-danger-fg, #e03127); color: #fff; border-radius: 999px; min-width: 20px; height: 20px; padding: 0 6px; font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+.fp-admin-panel { width: min(420px, calc(100vw - 36px)); max-height: min(70vh, 560px); overflow: auto; background: #fff; border: 1px solid var(--color-neutral-300); border-radius: var(--radius-lg); box-shadow: var(--lift); padding: 16px; text-align: right; }
+.fp-admin-panel h3 { margin: 0 0 12px; font: inherit; font-weight: 700; font-size: 15px; }
+.fp-admin-empty { color: var(--color-neutral-700); margin: 6px 0; }
+.fp-admin-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--color-neutral-200); }
+.fp-admin-row:first-of-type { border-top: 0; }
+.fp-admin-who { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.fp-admin-who span { font-size: 12px; color: var(--color-neutral-700); overflow: hidden; text-overflow: ellipsis; }
+.fp-admin-acts { display: flex; gap: 6px; flex-shrink: 0; }
