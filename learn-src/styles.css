@@ -909,6 +909,9 @@ body.preview-phone .app { min-height: 780px; }
 
 .fp-logo { width: var(--logo-size, 84px); }
 .fp-logo img { width: 100%; height: auto; display: block; }
+/* Respect the hidden attribute: the arc placeholder must only show when the
+   real logo.svg fails to load — never stacked underneath it. */
+.fp-logo img[hidden], .fp-logo-fallback[hidden] { display: none; }
 .fp-logo-fallback { display: flex; flex-direction: column; align-items: center; gap: 10px; }
 .fp-logo-fallback svg { width: 100%; height: auto; }
 .fp-wordmark {

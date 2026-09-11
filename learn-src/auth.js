@@ -378,6 +378,21 @@
     } catch (e) { /* ignore */ }
     return null;
   }
+  // Make sure this device is subscribed AND the server has the subscription
+  // stored. Idempotent: safe to call on every load; heals a server row that was
+  // never saved or was pruned. Returns true when the server confirms the save.
+  async function ensureSubscribed(token) {
+    var cfg = await getPushConfig();
+    if (!cfg.pushEnabled || !cfg.vapidPublic || !pushSupported() || Notification.permission !== 'granted') return false;
+    try {
+      var reg = await navigator.serviceWorker.getRegistration('sw.js') || await navigator.serviceWorker.register('sw.js');
+      await navigator.serviceWorker.ready;
+      var sub = await reg.pushManager.getSubscription();
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToU8(cfg.vapidPublic) });
+      var r = await la('registerPush', { token: token, subscription: sub.toJSON() });
+      return !!(r && r.ok);
+    } catch (e) { return false; }
+  }
   async function setupPushButton(token) {
     if (!adminBar) return;
     var btn = adminBar.querySelector('.fp-admin-push');
@@ -386,8 +401,9 @@
     if (!cfg.pushEnabled || !cfg.vapidPublic || !pushSupported() || Notification.permission === 'denied') return;
     var already = await existingSubscription();
     if (already) {
-      // Already subscribed: turn the pill into a working "send a test push" button
-      // so the admin can confirm delivery to this device at any time.
+      // Already subscribed on this device: re-save to the server (heals a missing
+      // row), then offer a working "send a test push" button.
+      ensureSubscribed(token);
       btn.textContent = '🔔 שלח התראת בדיקה';
       btn.hidden = false;
       btn.addEventListener('click', function () { sendTestPush(token, btn); });
@@ -402,6 +418,11 @@
     btn.disabled = true; btn.textContent = 'שולח…';
     try {
       var r = await la('testPush', { token: token });
+      // If the server has no subscription, re-register this device and retry once.
+      if (r && r.ok && r.subs === 0) {
+        btn.textContent = 'רושם מחדש…';
+        if (await ensureSubscribed(token)) r = await la('testPush', { token: token });
+      }
       if (r && r.ok && (r.subs > 0) && Array.isArray(r.results) && r.results.some(function (x) { return x.ok; })) {
         btn.textContent = '✅ נשלח — בדוק/י את הנייד';
       } else if (r && r.ok && r.subs === 0) {
