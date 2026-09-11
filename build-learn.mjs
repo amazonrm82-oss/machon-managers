@@ -29,8 +29,8 @@ const html = `<!DOCTYPE html>
 <meta name="theme-color" content="#f3f5fe">
 <meta name="color-scheme" content="light">
 <link rel="manifest" href="manifest.json">
-<link rel="icon" href="icon-32.png">
-<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-32.png?v=2">
+<link rel="apple-touch-icon" href="icon-180.png?v=2">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="למידה">
 <style>${css}</style>
