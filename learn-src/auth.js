@@ -180,10 +180,30 @@
     location.reload();
   }
 
-  function enter(user) {
-    if (window.FeuersteinLearn && window.FeuersteinLearn.boot) {
-      window.FeuersteinLearn.boot(user, { signOut: signOut });
+  // A fresh Microsoft ID token for the learning-gateway. Its audience is this
+  // app's client id (not Graph), which is exactly what the gateway verifies.
+  // Returns null on any failure so the app falls back to its local cache rather
+  // than breaking; the next attempt will try again.
+  async function acquireIdToken() {
+    try {
+      var app = await initMsal();
+      if (!app) return null;
+      var acct = app.getActiveAccount() || app.getAllAccounts()[0];
+      if (!acct) return null;
+      var res = await app.acquireTokenSilent({ scopes: ['User.Read'], account: acct });
+      return (res && res.idToken) || null;
+    } catch (e) {
+      return null;
     }
+  }
+
+  function enter(user) {
+    if (!(window.FeuersteinLearn && window.FeuersteinLearn.boot)) return;
+    var api = { signOut: signOut };
+    // Only a real Microsoft session gets server sync; the demo entrance stays
+    // local-only (no getToken -> the app's remote layer is inert).
+    if (user && user.via === 'microsoft') api.getToken = acquireIdToken;
+    window.FeuersteinLearn.boot(user, api);
   }
 
   /* ----------------------------------------------------------------- boot */
