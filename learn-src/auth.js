@@ -305,9 +305,22 @@
      approve or reject each. On sign-in, if anything is waiting, it opens by
      itself. */
 
-  var adminBar = null, adminToken = null;
+  var adminBar = null, adminToken = null, adminDocClick = null;
 
-  function removeAdminBar() { if (adminBar) { adminBar.remove(); adminBar = null; } adminToken = null; }
+  function removeAdminBar() {
+    if (adminDocClick) { document.removeEventListener('click', adminDocClick, true); adminDocClick = null; }
+    if (adminBar) { adminBar.remove(); adminBar = null; }
+    adminToken = null;
+  }
+
+  function setPanelOpen(open) {
+    if (!adminBar) return;
+    var p = adminBar.querySelector('.fp-admin-panel');
+    var t = adminBar.querySelector('.fp-admin-toggle');
+    p.hidden = !open;
+    if (t) t.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) refreshPending(true);
+  }
 
   async function mountAdminBar(token) {
     adminToken = token;
@@ -315,18 +328,21 @@
     adminBar = document.createElement('div');
     adminBar.className = 'fp-admin-bar';
     adminBar.innerHTML =
-      '<button type="button" class="fp-admin-toggle">אישור הרשמות <span class="fp-admin-badge" hidden>0</span></button>' +
+      '<div class="fp-admin-panel" hidden></div>' +
       '<button type="button" class="fp-admin-push" hidden></button>' +
-      '<div class="fp-admin-panel" hidden></div>';
+      '<button type="button" class="fp-admin-toggle" aria-expanded="false">אישור הרשמות <span class="fp-admin-badge" hidden>0</span></button>';
     document.body.appendChild(adminBar);
     adminBar.querySelector('.fp-admin-toggle').addEventListener('click', function () {
-      var p = adminBar.querySelector('.fp-admin-panel');
-      p.hidden = !p.hidden;
-      if (!p.hidden) refreshPending(true);
+      setPanelOpen(adminBar.querySelector('.fp-admin-panel').hidden);   // toggle
     });
+    // A tap anywhere outside the bar closes the panel, so it never blocks the app.
+    adminDocClick = function (e) {
+      if (adminBar && !adminBar.contains(e.target) && !adminBar.querySelector('.fp-admin-panel').hidden) setPanelOpen(false);
+    };
+    document.addEventListener('click', adminDocClick, true);
     setupPushButton(token);
-    var n = await refreshPending(false);
-    if (n > 0) { adminBar.querySelector('.fp-admin-panel').hidden = false; refreshPending(true); }
+    // Only surface the count in the badge — never auto-open the panel over the app.
+    await refreshPending(false);
   }
 
   /* -------------------------------------------- admin: phone push (Web Push)
@@ -403,22 +419,29 @@
     badge.hidden = list.length === 0;
     if (renderList) {
       var panel = adminBar.querySelector('.fp-admin-panel');
-      if (!list.length) { panel.innerHTML = '<p class="fp-admin-empty">אין הרשמות הממתינות לאישור.</p>'; return 0; }
-      panel.innerHTML = '<h3>הרשמות הממתינות לאישור</h3>' + list.map(function (a) {
-        return '<div class="fp-admin-row" data-id="' + esc(a.id) + '">' +
-          '<div class="fp-admin-who"><strong>' + esc(a.full_name) + '</strong>' +
-          '<span>' + esc(a.role || '—') + ' · ' + esc(a.email) + ' · ת"ז ' + esc(a.national_id) + '</span></div>' +
-          '<div class="fp-admin-acts">' +
-          '<button type="button" class="btn btn-sm btn-primary" data-act="approve">אישור</button>' +
-          '<button type="button" class="btn btn-sm btn-outline" data-act="reject">דחייה</button>' +
-          '</div></div>';
-      }).join('');
-      Array.prototype.forEach.call(panel.querySelectorAll('.fp-admin-row button'), function (btn) {
-        btn.addEventListener('click', function () {
-          var row = btn.closest('.fp-admin-row');
-          decide(btn.getAttribute('data-act'), row.getAttribute('data-id'), row);
+      var head = '<div class="fp-admin-head"><h3>הרשמות הממתינות לאישור</h3>' +
+        '<button type="button" class="fp-admin-close" aria-label="סגירה">✕</button></div>';
+      if (!list.length) {
+        panel.innerHTML = head + '<p class="fp-admin-empty">אין הרשמות הממתינות לאישור.</p>';
+      } else {
+        panel.innerHTML = head + list.map(function (a) {
+          return '<div class="fp-admin-row" data-id="' + esc(a.id) + '">' +
+            '<div class="fp-admin-who"><strong>' + esc(a.full_name) + '</strong>' +
+            '<span>' + esc(a.role || '—') + ' · ' + esc(a.email) + ' · ת"ז ' + esc(a.national_id) + '</span></div>' +
+            '<div class="fp-admin-acts">' +
+            '<button type="button" class="btn btn-sm btn-primary" data-act="approve">אישור</button>' +
+            '<button type="button" class="btn btn-sm btn-outline" data-act="reject">דחייה</button>' +
+            '</div></div>';
+        }).join('');
+        Array.prototype.forEach.call(panel.querySelectorAll('.fp-admin-row button'), function (btn) {
+          btn.addEventListener('click', function () {
+            var row = btn.closest('.fp-admin-row');
+            decide(btn.getAttribute('data-act'), row.getAttribute('data-id'), row);
+          });
         });
-      });
+      }
+      var closeBtn = panel.querySelector('.fp-admin-close');
+      if (closeBtn) closeBtn.addEventListener('click', function () { setPanelOpen(false); });
     }
     return list.length;
   }

@@ -1114,6 +1114,9 @@ button.avatar:hover { background: var(--color-accent-300); }
 .fp-admin-push { border: 1px solid var(--color-neutral-300); background: #fff; color: var(--color-ink, #1a2233); font: inherit; font-weight: 600; font-size: 13px; padding: 9px 14px; border-radius: 999px; box-shadow: var(--lift); cursor: pointer; }
 .fp-admin-push[disabled] { cursor: default; opacity: 0.85; }
 .fp-admin-panel { width: min(420px, calc(100vw - 36px)); max-height: min(70vh, 560px); overflow: auto; background: #fff; border: 1px solid var(--color-neutral-300); border-radius: var(--radius-lg); box-shadow: var(--lift); padding: 16px; text-align: right; }
+.fp-admin-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.fp-admin-head h3 { margin: 0; font: inherit; font-weight: 700; font-size: 15px; }
+.fp-admin-close { border: 0; background: var(--color-neutral-200, #e9ecf5); color: var(--color-ink, #1a2233); width: 30px; height: 30px; border-radius: 999px; font-size: 15px; line-height: 1; cursor: pointer; flex: none; }
 .fp-admin-panel h3 { margin: 0 0 12px; font: inherit; font-weight: 700; font-size: 15px; }
 .fp-admin-empty { color: var(--color-neutral-700); margin: 6px 0; }
 .fp-admin-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--color-neutral-200); }
