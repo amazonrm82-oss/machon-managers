@@ -4275,6 +4275,7 @@ window.ICONS = {
     var btn = document.getElementById('fp-r-submit');
     if (!name) return setMsg('fp-r-msg', false, REG_ERRORS.name_required);
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return setMsg('fp-r-msg', false, REG_ERRORS.email_invalid);
+    if (!/^[^@\s]+@icelp\.org\.il$/i.test(email)) return setMsg('fp-r-msg', false, REG_ERRORS.email_domain);
     if (!validIsraeliId(id)) return setMsg('fp-r-msg', false, REG_ERRORS.id_invalid);
     if (pass.length < 8) return setMsg('fp-r-msg', false, REG_ERRORS.password_short);
     if (pass !== pass2) return setMsg('fp-r-msg', false, 'הסיסמאות אינן תואמות.');

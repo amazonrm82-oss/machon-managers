@@ -6,8 +6,8 @@
 // Environment (Supabase project secrets):
 //   LEARN_TOKEN_SECRET   random string used to sign session tokens (HMAC-SHA256)
 //   LEARN_ADMIN_EMAIL    the one address that is the system administrator; that
-//                        account is auto-approved and admin, and is exempt from
-//                        the @icelp.org.il rule that everyone else must meet.
+//                        account is auto-approved and is the only approver. It
+//                        must itself be a name@icelp.org.il address, like everyone.
 //
 // Deploy with: supabase functions deploy learn-auth
 
@@ -21,7 +21,6 @@ const CORS_HEADERS = {
 
 const TOKEN_SECRET = Deno.env.get('LEARN_TOKEN_SECRET') || '';
 const ADMIN_EMAIL = (Deno.env.get('LEARN_ADMIN_EMAIL') || '').trim().toLowerCase();
-const ALLOWED_DOMAIN = '@icelp.org.il';
 const TOKEN_TTL = 12 * 60 * 60;          // 12h sessions
 const PBKDF2_ITER = 210000;              // OWASP-recommended for PBKDF2-HMAC-SHA256
 const MIN_PASSWORD = 8;
@@ -105,8 +104,10 @@ function validIsraeliId(raw: string): boolean {
   return sum % 10 === 0;
 }
 function normalizeEmail(e: string): string { return String(e || '').trim().toLowerCase(); }
+// Every account — the administrator included — must be name@icelp.org.il: exactly
+// one local part, then the fixed institute domain.
 function emailAllowed(email: string): boolean {
-  return email.endsWith(ALLOWED_DOMAIN) || (!!ADMIN_EMAIL && email === ADMIN_EMAIL);
+  return /^[^@\s]+@icelp\.org\.il$/.test(email);
 }
 function randomId(): string {
   return 'usr_' + b64urlFromBytes(crypto.getRandomValues(new Uint8Array(12)));
