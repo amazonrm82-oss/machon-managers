@@ -385,10 +385,35 @@
     var cfg = await getPushConfig();
     if (!cfg.pushEnabled || !cfg.vapidPublic || !pushSupported() || Notification.permission === 'denied') return;
     var already = await existingSubscription();
-    if (already) { btn.textContent = '🔔 התראות לנייד פעילות'; btn.hidden = false; btn.disabled = true; return; }
+    if (already) {
+      // Already subscribed: turn the pill into a working "send a test push" button
+      // so the admin can confirm delivery to this device at any time.
+      btn.textContent = '🔔 שלח התראת בדיקה';
+      btn.hidden = false;
+      btn.addEventListener('click', function () { sendTestPush(token, btn); });
+      return;
+    }
     btn.textContent = '🔔 הפעל התראות לנייד';
     btn.hidden = false;
     btn.addEventListener('click', function () { enablePush(token, btn); });
+  }
+  async function sendTestPush(token, btn) {
+    var label = btn.textContent;
+    btn.disabled = true; btn.textContent = 'שולח…';
+    try {
+      var r = await la('testPush', { token: token });
+      if (r && r.ok && (r.subs > 0) && Array.isArray(r.results) && r.results.some(function (x) { return x.ok; })) {
+        btn.textContent = '✅ נשלח — בדוק/י את הנייד';
+      } else if (r && r.ok && r.subs === 0) {
+        btn.textContent = 'לא נמצא מנוי — הפעל/י שוב';
+      } else {
+        var st = (r && r.results && r.results[0] && r.results[0].status) || (r && r.error) || '?';
+        btn.textContent = 'השליחה נכשלה (' + st + ')';
+      }
+    } catch (e) {
+      btn.textContent = 'שגיאה בשליחה';
+    }
+    setTimeout(function () { btn.textContent = label; btn.disabled = false; }, 4000);
   }
   async function enablePush(token, btn) {
     btn.disabled = true;
