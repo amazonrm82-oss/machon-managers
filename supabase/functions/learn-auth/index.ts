@@ -10,9 +10,10 @@
 //                        must itself be a name@icelp.org.il address, like everyone.
 //
 // Deploy with: supabase functions deploy learn-auth
+// (Single file on purpose — Web Push is inlined below so this deploys as one
+//  file, including via the Supabase dashboard editor.)
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { sendWebPush } from './webpush.ts';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -116,6 +117,81 @@ function emailAllowed(email: string): boolean {
 }
 function randomId(): string {
   return 'usr_' + b64urlFromBytes(crypto.getRandomValues(new Uint8Array(12)));
+}
+
+/* ---------------------------------------------------------------- web push
+   RFC 8291 payload encryption (aes128gcm) + RFC 8292 VAPID request auth, using
+   WebCrypto only (no npm deps). The crypto is verified offline by
+   webpush.reference.test.mjs (encrypt->decrypt round-trip, VAPID signature
+   verification, tamper detection). Inlined here so learn-auth is a single file. */
+
+function u8concat(...arrs: Uint8Array[]): Uint8Array {
+  let n = 0; for (const a of arrs) n += a.length;
+  const o = new Uint8Array(n); let i = 0; for (const a of arrs) { o.set(a, i); i += a.length; }
+  return o;
+}
+async function pushHmac(keyBytes: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
+  const k = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return new Uint8Array(await crypto.subtle.sign('HMAC', k, data));
+}
+// HKDF-Extract then HKDF-Expand to `len` bytes (len <= 32 for all uses here).
+async function pushHkdf(salt: Uint8Array, ikm: Uint8Array, info: Uint8Array, len: number): Promise<Uint8Array> {
+  const prk = await pushHmac(salt, ikm);
+  const out = await pushHmac(prk, u8concat(info, new Uint8Array([1])));
+  return out.slice(0, len);
+}
+// P-256 key: private = raw 32-byte scalar; public = 65-byte uncompressed point.
+function jwkFromVapid(pubB64u: string, privB64u?: string): JsonWebKey {
+  const pub = bytesFromB64url(pubB64u);   // 0x04 || X(32) || Y(32)
+  const jwk: JsonWebKey = { kty: 'EC', crv: 'P-256', x: b64urlFromBytes(pub.slice(1, 33)), y: b64urlFromBytes(pub.slice(33, 65)), ext: true };
+  if (privB64u) jwk.d = b64urlFromBytes(bytesFromB64url(privB64u));
+  return jwk;
+}
+async function buildVapidJwt(audience: string, subject: string, pubB64u: string, privB64u: string, ttlSec = 12 * 3600): Promise<string> {
+  const header = { typ: 'JWT', alg: 'ES256' };
+  const payload = { aud: audience, exp: Math.floor(Date.now() / 1000) + ttlSec, sub: subject };
+  const signingInput = b64urlFromBytes(enc.encode(JSON.stringify(header))) + '.' + b64urlFromBytes(enc.encode(JSON.stringify(payload)));
+  const key = await crypto.subtle.importKey('jwk', jwkFromVapid(pubB64u, privB64u), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+  const sig = new Uint8Array(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, enc.encode(signingInput)));
+  return signingInput + '.' + b64urlFromBytes(sig);   // ES256 signature is raw R||S (64 bytes)
+}
+interface PushSubscription { endpoint: string; keys: { p256dh: string; auth: string }; }
+// RFC 8291 §3.4 + RFC 8188: encrypt a UTF-8 payload for one subscription.
+async function encryptPushPayload(subscription: PushSubscription, payloadStr: string): Promise<Uint8Array> {
+  const uaPublic = bytesFromB64url(subscription.keys.p256dh);   // 65 bytes
+  const authSecret = bytesFromB64url(subscription.keys.auth);   // 16 bytes
+  const kp = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']) as CryptoKeyPair;
+  const asPublicRaw = new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey));
+  const uaKey = await crypto.subtle.importKey('raw', uaPublic, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+  const ecdhSecret = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: uaKey }, kp.privateKey, 256));
+  const keyInfo = u8concat(enc.encode('WebPush: info\0'), uaPublic, asPublicRaw);
+  const ikm = await pushHkdf(authSecret, ecdhSecret, keyInfo, 32);
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const cek = await pushHkdf(salt, ikm, enc.encode('Content-Encoding: aes128gcm\0'), 16);
+  const nonce = await pushHkdf(salt, ikm, enc.encode('Content-Encoding: nonce\0'), 12);
+  const record = u8concat(enc.encode(payloadStr), new Uint8Array([2]));   // single record, 0x02 delimiter
+  const aesKey = await crypto.subtle.importKey('raw', cek, { name: 'AES-GCM' }, false, ['encrypt']);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, aesKey, record));
+  const rs = 4096;
+  const hdr = u8concat(salt, new Uint8Array([(rs >>> 24) & 255, (rs >>> 16) & 255, (rs >>> 8) & 255, rs & 255]), new Uint8Array([asPublicRaw.length]), asPublicRaw);
+  return u8concat(hdr, ct);
+}
+// Send one push. `gone` (404/410) means the endpoint is dead and should be dropped.
+async function sendWebPush(subscription: PushSubscription, payloadStr: string, vapid: { publicKey: string; privateKey: string; subject: string }): Promise<{ ok: boolean; status: number; gone: boolean }> {
+  const audience = new URL(subscription.endpoint).origin;
+  const jwt = await buildVapidJwt(audience, vapid.subject, vapid.publicKey, vapid.privateKey);
+  const body = await encryptPushPayload(subscription, payloadStr);
+  const res = await fetch(subscription.endpoint, {
+    method: 'POST',
+    headers: {
+      'TTL': '86400',
+      'Content-Encoding': 'aes128gcm',
+      'Content-Type': 'application/octet-stream',
+      'Authorization': `vapid t=${jwt}, k=${vapid.publicKey}`,
+    },
+    body,
+  });
+  return { ok: res.ok, status: res.status, gone: res.status === 404 || res.status === 410 };
 }
 
 /* ------------------------------------------------------------- admin notify */
