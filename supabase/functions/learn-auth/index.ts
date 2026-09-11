@@ -200,27 +200,44 @@ async function sendWebPush(subscription: PushSubscription, payloadStr: string, v
 // list / badge the admin sees on sign-in. Phone: a Web Push to each device the
 // admin has registered — sent only when VAPID secrets are configured. Dead
 // endpoints (404/410) are pruned. Push failures never fail the registration.
+// Send a push to every device the administrator(s) registered. Returns a small
+// diagnostic summary (counts + per-send status) with no secrets — safe to log
+// and to return to an admin. Dead endpoints (404/410) are pruned.
+async function pushToAdmins(payloadObj: Record<string, unknown>): Promise<{ admins: number; subs: number; results: { status: number; ok: boolean }[] }> {
+  const summary = { admins: 0, subs: 0, results: [] as { status: number; ok: boolean }[] };
+  if (!PUSH_ENABLED) return summary;
+  const { data: admins } = await db.from('learning_accounts').select('id').eq('is_admin', true).eq('status', 'approved');
+  const adminIds = (admins ?? []).map((a: any) => a.id);
+  summary.admins = adminIds.length;
+  if (!adminIds.length) return summary;
+  const { data: subs } = await db.from('learning_push').select('endpoint, subscription').in('user_id', adminIds);
+  summary.subs = subs?.length ?? 0;
+  if (!subs?.length) return summary;
+  const payload = JSON.stringify(payloadObj);
+  const vapid = { publicKey: VAPID_PUBLIC, privateKey: VAPID_PRIVATE, subject: VAPID_SUBJECT };
+  await Promise.all((subs as any[]).map(async (row) => {
+    try {
+      const res = await sendWebPush(row.subscription, payload, vapid);
+      summary.results.push({ status: res.status, ok: res.ok });
+      if (!res.ok) console.error(`push send non-ok: status=${res.status} endpoint=${String(row.endpoint).slice(0, 60)}`);
+      if (res.gone) await db.from('learning_push').delete().eq('endpoint', row.endpoint);
+    } catch (e) {
+      summary.results.push({ status: 0, ok: false });
+      console.error('push send threw:', e);
+    }
+  }));
+  return summary;
+}
+
 async function notifyAdminsOfRegistration(acct: any) {
-  if (!PUSH_ENABLED) return;
   try {
-    const { data: admins } = await db.from('learning_accounts').select('id').eq('is_admin', true).eq('status', 'approved');
-    const adminIds = (admins ?? []).map((a: any) => a.id);
-    if (!adminIds.length) return;
-    const { data: subs } = await db.from('learning_push').select('endpoint, subscription').in('user_id', adminIds);
-    if (!subs?.length) return;
-    const payload = JSON.stringify({
+    const s = await pushToAdmins({
       title: 'הרשמה חדשה למערכת הלמידה',
       body: `${acct.full_name || 'משתמש חדש'} (${acct.role || 'ללא תפקיד'}) ממתין לאישור`,
       url: '/machon-managers/learn.html',
       tag: 'learn-registration',
     });
-    const vapid = { publicKey: VAPID_PUBLIC, privateKey: VAPID_PRIVATE, subject: VAPID_SUBJECT };
-    await Promise.all((subs as any[]).map(async (row) => {
-      try {
-        const res = await sendWebPush(row.subscription, payload, vapid);
-        if (res.gone) await db.from('learning_push').delete().eq('endpoint', row.endpoint);
-      } catch (e) { console.error('push send failed:', e); }
-    }));
+    console.log(`notifyAdmins: admins=${s.admins} subs=${s.subs} results=${JSON.stringify(s.results)}`);
   } catch (e) {
     console.error('notifyAdminsOfRegistration failed:', e);
   }
@@ -306,6 +323,18 @@ Deno.serve(async (req: Request) => {
 
     // ---- admin-only from here ----
     if (!me.admin) return json({ ok: false, error: 'forbidden' }, 403);
+
+    if (action === 'testPush') {
+      if (!PUSH_ENABLED) return json({ ok: false, error: 'push_not_configured' }, 400);
+      const s = await pushToAdmins({
+        title: 'בדיקת התראה ✅',
+        body: 'זו התראת בדיקה ממערכת הלמידה. אם קיבלת אותה — Push לנייד עובד.',
+        url: '/machon-managers/learn.html',
+        tag: 'learn-test',
+      });
+      // Report counts + statuses so the admin sees exactly what the push service returned.
+      return json({ ok: true, admins: s.admins, subs: s.subs, results: s.results });
+    }
 
     if (action === 'pending') {
       const { data } = await db.from('learning_accounts').select('id, full_name, role, email, national_id, created_at').eq('status', 'pending').order('created_at', { ascending: true });
