@@ -137,8 +137,21 @@ Microsoft, והמערכת מקבלת בחזרה רק שם ומייל. אין כ�
 3. **פריסה:** `supabase functions deploy learn-auth`.
 4. **מיזוג ל-main** (רק אחרי 1–3): הכניסה עוברת מדמו להרשמה/התחברות אמיתית.
 
-### דחיפה לנייד (Push) — שלב הבא
+### דחיפה לנייד (Push)
 
-התשתית קיימת (טבלת `learning_push` + פעולת `registerPush`), אבל שליחת ה-Push בפועל
-(מפתחות VAPID + פרוטוקול Web Push + service worker ל-learn) עדיין לא מומשה. ההתראה
-בתוך האפליקציה עובדת מלאה; דחיפת ה-Push היא הרחבה נפרדת.
+כשמנהל המערכת מחובר מופיע בסרגל האישורים כפתור **"🔔 הפעל התראות לנייד"**. בלחיצה הדפדפן
+מבקש הרשאה, רושם את ה-service worker (`sw.js`) ונרשם ל-Push; המנוי נשמר ב-`learning_push`.
+מאותו רגע, כל הרשמה חדשה גורמת ל-`learn-auth` לשלוח Web Push (RFC 8291/8292, מוצפן
+בשרת ב-`webpush.ts`) לכל מכשיר שהמנהל רשם. מנויים מתים (404/410) נמחקים אוטומטית.
+
+**הפעלה — שלושה secrets נוספים** (Project Settings → Edge Functions → Secrets):
+
+- `LEARN_VAPID_PUBLIC` — מפתח VAPID ציבורי (base64url, נקודת P-256 של 65 בייט).
+- `LEARN_VAPID_PRIVATE` — מפתח VAPID פרטי (base64url, סקלר P-256 של 32 בייט).
+- `LEARN_VAPID_SUBJECT` — כתובת קשר, למשל `mailto:Matanz@icelp.org.il`.
+
+אחרי הגדרת ה-secrets — לפרוס מחדש: `supabase functions deploy learn-auth`. אם ה-secrets
+לא מוגדרים, הכפתור פשוט לא מופיע וההתראה בתוך האפליקציה (המונה) ממשיכה לעבוד כרגיל.
+
+הצפנת ה-Push נבדקת אופליין ב-`webpush.reference.test.mjs` (הצפנה→פענוח הלוך-ושוב,
+אימות חתימת VAPID, זיהוי שיבוש, יוניקוד).
