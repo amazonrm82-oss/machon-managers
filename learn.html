@@ -4074,8 +4074,8 @@ window.ICONS = {
   function logoMarkup(size) {
     return '' +
       '<div class="fp-logo" style="--logo-size:' + size + 'px">' +
-      '<img src="logo.svg" alt="מכון פוירשטיין"' +
-      ' onerror="this.onerror=null;this.src=\'logo.png\';this.addEventListener(\'error\',function(){' +
+      '<img src="logo.png" alt="מכון פוירשטיין"' +
+      ' onerror="this.onerror=null;this.src=\'logo.svg\';this.addEventListener(\'error\',function(){' +
       'this.style.display=\'none\';this.parentNode.querySelector(\'.fp-logo-fallback\').hidden=false;},{once:true})">' +
       '<div class="fp-logo-fallback" hidden>' +
       '<svg viewBox="0 0 100 100" aria-hidden="true"><g fill="none" stroke-width="14">' +
@@ -4440,19 +4440,32 @@ window.ICONS = {
     var btn = adminBar.querySelector('.fp-admin-push');
     if (!btn) return;
     var cfg = await getPushConfig();
-    if (!cfg.pushEnabled || !cfg.vapidPublic || !pushSupported() || Notification.permission === 'denied') return;
+    // Only truly hide the button when the server has no push configured at all.
+    if (!cfg.pushEnabled || !cfg.vapidPublic) { btn.hidden = true; return; }
+    btn.hidden = false;
+    // Otherwise always show it, with a clear reason when it can't be turned on —
+    // so the admin never faces a silently missing button.
+    if (!pushSupported()) {
+      var isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent || '');
+      btn.textContent = isIOS ? '🔔 הוסף למסך הבית לקבלת התראות' : '🔔 התראות אינן נתמכות בדפדפן זה';
+      btn.disabled = true;
+      return;
+    }
+    if (typeof Notification !== 'undefined' && Notification.permission === 'denied') {
+      btn.textContent = '🔔 ההתראות חסומות — אפשר/י בהגדרות הדפדפן';
+      btn.disabled = true;
+      return;
+    }
     var already = await existingSubscription();
     if (already) {
       // Already subscribed on this device: re-save to the server (heals a missing
       // row), then offer a working "send a test push" button.
       ensureSubscribed(token);
       btn.textContent = '🔔 שלח התראת בדיקה';
-      btn.hidden = false;
       btn.addEventListener('click', function () { sendTestPush(token, btn); });
       return;
     }
     btn.textContent = '🔔 הפעל התראות לנייד';
-    btn.hidden = false;
     btn.addEventListener('click', function () { enablePush(token, btn); });
   }
   async function sendTestPush(token, btn) {

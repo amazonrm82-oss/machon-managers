@@ -233,7 +233,7 @@
 
   <header class="head">
     <div class="logo">
-      <img src="logo.svg" alt="מכון פוירשטיין" id="logo-img">
+      <img src="logo.png" alt="מכון פוירשטיין" id="logo-img">
       <div class="logo-fallback" id="logo-fallback" hidden>
         <svg viewBox="0 0 100 100" aria-hidden="true">
           <g fill="none" stroke-width="13">
@@ -299,7 +299,7 @@
     var img = document.getElementById('logo-img');
     var fallback = document.getElementById('logo-fallback');
     var watermark = document.getElementById('watermark');
-    var triedPng = false;
+    var triedSvg = false;
 
     img.addEventListener('load', function () {
       // Same file, already in cache — no second request.
@@ -307,7 +307,8 @@
     });
 
     img.addEventListener('error', function () {
-      if (!triedPng) { triedPng = true; img.src = 'logo.png'; return; }
+      // Prefer the official raster (logo.png); fall back to logo.svg, then the ring.
+      if (!triedSvg) { triedSvg = true; img.src = 'logo.svg'; return; }
       img.hidden = true;
       fallback.hidden = false;
     });
