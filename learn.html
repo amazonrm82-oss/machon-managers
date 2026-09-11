@@ -1278,6 +1278,24 @@ window.ICONS = {
   var authApi = null;       // { signOut }
   var accountOpen = false;  // account menu in the header
 
+  // Repair a loaded state object to the shapes the app relies on. Shared by the
+  // local load() and the remote pull, so server data is guarded exactly like
+  // localStorage data.
+  function normalizeState(s) {
+    if (!Array.isArray(s.rubric) || s.rubric.length !== 4) s.rubric = defaults.rubric.slice();
+    if (!s.forms || typeof s.forms !== 'object') s.forms = {};
+    if (!s.submissions || typeof s.submissions !== 'object') s.submissions = {};
+    if (!Array.isArray(s.practiceEntries)) s.practiceEntries = [];
+    if (!s.feedback || typeof s.feedback !== 'object') s.feedback = {};
+    if (!s.records || typeof s.records !== 'object') s.records = { observations: [], meetings: [], notes: [] };
+    ['observations', 'meetings', 'notes'].forEach(function (k) {
+      if (!Array.isArray(s.records[k])) s.records[k] = [];
+    });
+    if (!Array.isArray(s.userAssets)) s.userAssets = [];
+    if (s.curriculum && (!Array.isArray(s.curriculum.stages) || !s.curriculum.tracks)) s.curriculum = null;
+    return s;
+  }
+
   function load() {
     var s = {};
     for (var k in defaults) s[k] = defaults[k];
@@ -1287,23 +1305,80 @@ window.ICONS = {
         var saved = JSON.parse(raw);
         for (var key in saved) if (key in defaults) s[key] = saved[key];
       }
-      if (!Array.isArray(s.rubric) || s.rubric.length !== 4) s.rubric = defaults.rubric.slice();
-      if (!s.forms || typeof s.forms !== 'object') s.forms = {};
-      if (!s.submissions || typeof s.submissions !== 'object') s.submissions = {};
-      if (!Array.isArray(s.practiceEntries)) s.practiceEntries = [];
-      if (!s.feedback || typeof s.feedback !== 'object') s.feedback = {};
-      if (!s.records || typeof s.records !== 'object') s.records = { observations: [], meetings: [], notes: [] };
-      ['observations', 'meetings', 'notes'].forEach(function (k) {
-        if (!Array.isArray(s.records[k])) s.records[k] = [];
-      });
-      if (!Array.isArray(s.userAssets)) s.userAssets = [];
-      if (s.curriculum && (!Array.isArray(s.curriculum.stages) || !s.curriculum.tracks)) s.curriculum = null;
+      normalizeState(s);
     } catch (e) { /* private mode, cleared storage — start fresh */ }
     return s;
   }
 
   function save() {
+    // localStorage is always written — it is the offline cache, and the only
+    // store at all for the demo entrance.
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* ignore */ }
+    // When signed in with a real Microsoft account, mirror it to the server too.
+    remotePush();
+  }
+
+  /* ------------------------------------------------------ remote sync (server)
+
+     The learning-gateway Edge Function persists each learner's state on the
+     server, isolated by their verified Microsoft identity — see
+     supabase/functions/learning-gateway. This layer activates ONLY when auth.js
+     hands boot() a getToken() (a real Microsoft sign-in). With no token — the
+     demo entrance, or a plain standalone open — everything here is inert and the
+     app is exactly the local-only app it was before: localStorage is the store.
+
+     Model: localStorage is the offline cache; the server is the source of truth.
+     boot() pulls the server copy once; every save() mirrors the state up
+     (debounced). A failed call (offline, or Entra/gateway not configured yet)
+     is swallowed — the local cache carries on and the next save() retries. */
+
+  var LG_URL = 'https://tnfjcmmblrkhypprjacq.supabase.co/functions/v1/learning-gateway';
+  // Public anon key — it only authorizes *calling* the function; the function
+  // accepts nothing but a verified Microsoft token for the actual identity.
+  var LG_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRuZmpjbW1ibHJraHlwcHJqYWNxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc2NTE5ODMsImV4cCI6MjEwMzIyNzk4M30.SWp32bN-Pm-X4qDX8QbGQED5DYJBZQBg28C4vJ17gns';
+  var remotePushTimer = null;
+
+  function remoteActive() { return !!(authApi && typeof authApi.getToken === 'function'); }
+
+  async function remoteCall(action, extra) {
+    var token = await authApi.getToken();
+    if (!token) throw new Error('no-token');
+    var res = await fetch(LG_URL, {
+      method: 'POST',
+      headers: { apikey: LG_ANON, Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ action: action }, extra || {}))
+    });
+    var json = await res.json().catch(function () { return {}; });
+    if (!res.ok || json.ok === false) throw new Error((json && json.error) || ('http-' + res.status));
+    return json;
+  }
+
+  // Pull the learner's saved state from the server and merge it over what is in
+  // memory, then re-render. Server wins for any key it carries.
+  async function remotePull() {
+    if (!remoteActive()) return;
+    try {
+      var r = await remoteCall('load', {});
+      var data = (r && r.state && typeof r.state === 'object') ? r.state : null;
+      if (data) {
+        for (var key in data) if (key in defaults) state[key] = data[key];
+        normalizeState(state);
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* ignore */ }
+        render();
+      }
+    } catch (e) {
+      // Offline, or Entra/gateway not configured yet: keep the local cache.
+    }
+  }
+
+  // Mirror the current state to the server, debounced. No-op unless a real
+  // Microsoft session is active.
+  function remotePush() {
+    if (!remoteActive()) return;
+    clearTimeout(remotePushTimer);
+    remotePushTimer = setTimeout(function () {
+      remoteCall('save', { state: state }).catch(function () { /* stays cached; next save retries */ });
+    }, 1200);
   }
 
   function set(patch, opts) {
@@ -3911,6 +3986,10 @@ window.ICONS = {
         save();
       }
       render();
+      // If this is a real Microsoft session, hydrate from the server; the local
+      // cache above is shown first so the app is instant, then replaced by the
+      // server copy when it arrives. Inert for the demo entrance.
+      remotePull();
     }
   };
 
@@ -4099,10 +4178,30 @@ window.ICONS = {
     location.reload();
   }
 
-  function enter(user) {
-    if (window.FeuersteinLearn && window.FeuersteinLearn.boot) {
-      window.FeuersteinLearn.boot(user, { signOut: signOut });
+  // A fresh Microsoft ID token for the learning-gateway. Its audience is this
+  // app's client id (not Graph), which is exactly what the gateway verifies.
+  // Returns null on any failure so the app falls back to its local cache rather
+  // than breaking; the next attempt will try again.
+  async function acquireIdToken() {
+    try {
+      var app = await initMsal();
+      if (!app) return null;
+      var acct = app.getActiveAccount() || app.getAllAccounts()[0];
+      if (!acct) return null;
+      var res = await app.acquireTokenSilent({ scopes: ['User.Read'], account: acct });
+      return (res && res.idToken) || null;
+    } catch (e) {
+      return null;
     }
+  }
+
+  function enter(user) {
+    if (!(window.FeuersteinLearn && window.FeuersteinLearn.boot)) return;
+    var api = { signOut: signOut };
+    // Only a real Microsoft session gets server sync; the demo entrance stays
+    // local-only (no getToken -> the app's remote layer is inert).
+    if (user && user.via === 'microsoft') api.getToken = acquireIdToken;
+    window.FeuersteinLearn.boot(user, api);
   }
 
   /* ----------------------------------------------------------------- boot */

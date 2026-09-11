@@ -87,3 +87,24 @@ Microsoft, והמערכת מקבלת בחזרה רק שם ומייל. אין כ�
 **תקלה נפוצה:** `AADSTS9002326` או שגיאת redirect — הכתובת ב-Entra ID
 נרשמה כ-**Web** ולא כ-**Single-page application**. יש למחוק ולהוסיף
 מחדש תחת SPA.
+
+---
+
+## אחסון בשרת (learning-gateway)
+
+מרגע שההתחברות ל-Microsoft פעילה, המערכת שומרת את הנתונים של כל לומד בשרת
+(Supabase), מבודדים לפי הזהות המאומתת שלו — לא רק ב-localStorage.
+
+- **הקוד בקליינט מחובר** (`app.js` + `auth.js`): בכניסה עם חשבון Microsoft הוא
+  טוען את המצב מהשרת, וכל שינוי נשמר לשרת (debounced) עם ה-localStorage כמטמון
+  לא-מקוון. **הכניסה הזמנית (דמו) נשארת מקומית בלבד** — שכבת השרת כבויה בלעדיה.
+- **הצד השרתי:** הפונקציה `supabase/functions/learning-gateway` והמיגרציה
+  `supabase/migrations/20260909_learning_tables.sql`. הבידוד per-user מאומת ב-
+  `learning-gateway/verify.reference.test.mjs` (22 בדיקות).
+
+כדי להפעיל את האחסון בשרת (אחרי רישום Entra ID לעיל):
+1. secrets בפרויקט Supabase: `MS_TENANT_ID` ו-`MS_CLIENT_ID` (אותם מזהים מ-`ms-config.js`).
+2. להריץ את המיגרציה: `supabase db push` (או הדבקת ה-SQL ב-SQL Editor).
+3. לפרוס את הפונקציה: `supabase functions deploy learning-gateway`.
+
+עד שהשלבים האלה בוצעו, הכל ממשיך לעבוד מקומית (מטמון), והסנכרון פשוט מדלג בשקט.
