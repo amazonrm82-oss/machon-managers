@@ -1270,6 +1270,7 @@ window.ICONS = {
     screen: 'register',
     dept: 'head',
     name: '',
+    userEmail: '',          // which signed-in account this local data belongs to
     registered: false,
     libTab: 'assets',
     reviewTarget: '',
@@ -3782,6 +3783,13 @@ window.ICONS = {
 
     signOut: function () {
       accountOpen = false;
+      // Clear this user's local data so the next person to sign in on this
+      // device starts clean — otherwise the previous user's name and data
+      // linger (the auth token alone lives under a different key). For a real
+      // account the server copy is the source of truth and re-hydrates on the
+      // next sign-in; the demo entrance simply starts fresh.
+      try { localStorage.removeItem(STORAGE_KEY); } catch (e) { /* ignore */ }
+      state = load();
       if (authApi && authApi.signOut) authApi.signOut();
       else location.reload();
     },
@@ -4007,10 +4015,17 @@ window.ICONS = {
     boot: function (user, api) {
       currentUser = user || null;
       authApi = api || null;
-      if (currentUser && currentUser.name && !(state.name || '').trim()) {
+      // If a different account is now signed in than the data on this device
+      // belongs to, start that user clean so no one sees another user's data.
+      if (currentUser && currentUser.email && state.userEmail && state.userEmail !== currentUser.email) {
+        try { localStorage.removeItem(STORAGE_KEY); } catch (e) { /* ignore */ }
+        state = load();
+      }
+      if (currentUser && currentUser.name) {
         // Someone who signed in with a real account has already identified
         // themselves; carry the name in and skip the demo registration form.
         state.name = currentUser.name;
+        state.userEmail = currentUser.email || '';
         if (state.screen === 'register') { state.registered = true; state.screen = 'home'; }
         save();
       }
