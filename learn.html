@@ -1278,6 +1278,10 @@ window.ICONS = {
     libTab: 'assets',
     reviewTarget: '',
     chapterRosterRef: '',
+    cohortEditId: '',
+    newCohortName: '',
+    newCohortStart: '',
+    newCohortEnd: '',
     // null means "the institute's original programme"; the builder clones it
     // on the first edit so the default is never mutated.
     curriculum: null,
@@ -1304,7 +1308,11 @@ window.ICONS = {
     practiceEntries: [],
     feedback: {},
     records: { observations: [], meetings: [], notes: [] },
-    userAssets: []
+    userAssets: [],
+    // Real, self-computed learning time per chapter (ms), toward the
+    // certificate's 60-hour requirement — never approved by anyone, unlike
+    // the separate supervised-practice hours above.
+    chapterTime: {}
   };
 
   var state = load();
@@ -1326,6 +1334,7 @@ window.ICONS = {
       if (!Array.isArray(s.records[k])) s.records[k] = [];
     });
     if (!Array.isArray(s.userAssets)) s.userAssets = [];
+    if (!s.chapterTime || typeof s.chapterTime !== 'object') s.chapterTime = {};
     if (s.curriculum && (!Array.isArray(s.curriculum.stages) || !s.curriculum.tracks)) s.curriculum = null;
     return s;
   }
@@ -1370,6 +1379,7 @@ window.ICONS = {
      is swallowed — the local cache carries on and the next save() retries. */
 
   var LG_URL = 'https://tnfjcmmblrkhypprjacq.supabase.co/functions/v1/learning-gateway';
+  var LEARN_AUTH_URL = 'https://tnfjcmmblrkhypprjacq.supabase.co/functions/v1/learn-auth';
   // Public anon key — it only authorizes *calling* the function; the function
   // accepts nothing but a verified Microsoft token for the actual identity.
   var LG_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRuZmpjbW1ibHJraHlwcHJqYWNxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc2NTE5ODMsImV4cCI6MjEwMzIyNzk4M30.SWp32bN-Pm-X4qDX8QbGQED5DYJBZQBg28C4vJ17gns';
@@ -1457,6 +1467,61 @@ window.ICONS = {
     return chapterRosters[chapterRef];
   }
 
+  // Only learn-auth (not learning-gateway) owns learning_accounts.is_admin —
+  // used for the one admin-promotion action, setAdmin.
+  async function remoteCallAuth(action, extra) {
+    var token = await authApi.getToken();
+    if (!token) throw new Error('no-token');
+    var res = await fetch(LEARN_AUTH_URL, {
+      method: 'POST',
+      headers: { apikey: LG_ANON, Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ action: action }, extra || {}))
+    });
+    var json = await res.json().catch(function () { return {}; });
+    if (!res.ok || json.ok === false) {
+      var err = new Error((json && json.error) || ('http-' + res.status));
+      err.status = res.status; err.body = json;
+      throw err;
+    }
+    return json;
+  }
+
+  var myPeople = null;       // [{id, name, email, role, managerId, chapterRefs}] | null, admin-only
+  var peopleLoading = false;
+  function ensurePeopleLoaded() {
+    if (!remoteActive() || myPeople !== null || peopleLoading) return;
+    peopleLoading = true;
+    remoteCall('people', {}).then(function (r) {
+      myPeople = (r && Array.isArray(r.people)) ? r.people : [];
+      peopleLoading = false;
+      render();
+    }).catch(function () { myPeople = []; peopleLoading = false; });
+  }
+
+  var myCohorts = null;      // [{id, name, startDate, endDate, memberCount}] | null, admin-only
+  var cohortsLoading = false;
+  function ensureCohortsLoaded() {
+    if (!remoteActive() || myCohorts !== null || cohortsLoading) return;
+    cohortsLoading = true;
+    remoteCall('cohorts', {}).then(function (r) {
+      myCohorts = (r && Array.isArray(r.cohorts)) ? r.cohorts : [];
+      cohortsLoading = false;
+      render();
+    }).catch(function () { myCohorts = []; cohortsLoading = false; });
+  }
+
+  var cohortMembersCache = {}; // cohortId -> [{id,name,email}] | 'loading'
+  function ensureCohortMembers(cohortId) {
+    if (!remoteActive() || !cohortId) return [];
+    if (cohortMembersCache[cohortId]) return cohortMembersCache[cohortId];
+    cohortMembersCache[cohortId] = 'loading';
+    remoteCall('cohortMembers', { cohortId: cohortId }).then(function (r) {
+      cohortMembersCache[cohortId] = (r && Array.isArray(r.members)) ? r.members : [];
+      render();
+    }).catch(function () { delete cohortMembersCache[cohortId]; });
+    return cohortMembersCache[cohortId];
+  }
+
   function ensureSessionRegistrants(ref) {
     if (!remoteActive() || !ref) return [];
     if (sessionRegistrants[ref]) return sessionRegistrants[ref];
@@ -1536,13 +1601,38 @@ window.ICONS = {
   // the session schedule, the knowledge-base library. Enforced for real in
   // learning-gateway's saveContent (admin-only); this is the UI-level guard
   // so a non-admin never even sees the editing screens.
-  var ADMIN_ONLY_SCREENS = ['coordinator', 'curriculum', 'chapterEdit', 'sessionsEdit', 'libraryEdit'];
+  var ADMIN_ONLY_SCREENS = ['coordinator', 'curriculum', 'chapterEdit', 'sessionsEdit', 'libraryEdit', 'peopleAdmin', 'cohortsAdmin'];
+  // Real, self-computed time-on-task: accumulates while the lesson screen is
+  // open, attributed to whichever chapter was current when it opened.
+  // Nobody approves this — it is the learner's own device clock, same as the
+  // "כמה זמן הייתי" the person asked for. Sanity-bounded so a tab left open
+  // overnight cannot inflate the total.
+  var lessonTimerStart = null;
+  var lessonTimerRef = null;
+  function flushLessonTimer() {
+    if (lessonTimerStart && lessonTimerRef) {
+      var elapsed = Date.now() - lessonTimerStart;
+      if (elapsed > 1000 && elapsed < 6 * 3600000) {
+        state.chapterTime[lessonTimerRef] = (state.chapterTime[lessonTimerRef] || 0) + elapsed;
+        save();
+      }
+    }
+    lessonTimerStart = null;
+    lessonTimerRef = null;
+  }
+  if (typeof window !== 'undefined') window.addEventListener('beforeunload', flushLessonTimer);
+
   function go(screen) {
     accountOpen = false;
     if (ADMIN_ONLY_SCREENS.indexOf(screen) !== -1 && !(currentUser && currentUser.isAdmin)) {
       toast('מסך זה פתוח למנהל המערכת בלבד');
       set({ screen: 'admin' }, { top: true });
       return;
+    }
+    if (state.screen === 'lesson' && screen !== 'lesson') flushLessonTimer();
+    if (screen === 'lesson' && state.screen !== 'lesson') {
+      lessonTimerStart = Date.now();
+      lessonTimerRef = derive().current.ref;
     }
     set({ screen: screen }, { top: true });
   }
@@ -1781,7 +1871,15 @@ window.ICONS = {
     var isPhone = state.preview === 'phone' || (state.preview === 'auto' && !wide);
     var isDesktop = !isPhone;
 
+    // Real cohort timing when the admin has placed this person in one: the
+    // track's day-count comes from the cohort's own start date, not a
+    // global clock — several cohorts can be mid-programme at once. With no
+    // cohort assigned, the demo slider (state.day) still drives the preview.
     var day = state.day;
+    if (myCohort && myCohort.startDate) {
+      var elapsedMs = Date.now() - new Date(myCohort.startDate + 'T00:00:00').getTime();
+      day = Math.max(1, Math.floor(elapsedMs / 86400000) + 1);
+    }
     var registered = state.registered;
     var screen = state.screen;
     var dept = state.dept;
@@ -1807,29 +1905,36 @@ window.ICONS = {
     };
     var otherTrackKey = isHead ? 'ptsd' : 'head';
 
+    // Real, merit-based chapter status — no lock between chapters (chapters
+    // are shown in fixed order, but every one is reachable): a chapter is
+    // 'done' once its exam is graded, 'submitted' while awaiting a grade,
+    // otherwise simply available. Sourced from the server (mySubByRef),
+    // never guessed from the day counter.
+    var mySubByRef = {};
+    mySubmissions.forEach(function (s) { mySubByRef[s.kind + ':' + s.ref] = s; });
+
     function mk(list, no) {
       return list.map(function (raw, i) {
         var content = asChapter(raw);
         var title = content.title;
-        var st = 'locked';
-        if (done || no < stageIdx) {
-          st = (!done && no === stageIdx - 1 && i === list.length - 1) ? 'submitted' : 'done';
-        } else if (no === stageIdx) {
-          st = i === 0 ? (state.testSubmitted ? 'submitted' : 'current') : 'locked';
-        }
-        var notes = st === 'done' ? (i % 2 === 0 ? 2 : 0) : 0;
+        var ref = refOf(no - 1, i);
+        var subRow = mySubByRef['chapter:' + ref];
+        var graded = !!(subRow && subRow.feedback_by);
+        var submitted = !!subRow && !graded;
+        var st = graded ? 'done' : submitted ? 'submitted' : 'current';
+        var notes = graded && Array.isArray(subRow.feedback) ? subRow.feedback.length : 0;
         return {
           id: no + '.' + (i + 1), title: title, no: no, status: st,
-          content: content, ref: refOf(no - 1, i),
+          content: content, ref: ref,
           done: st === 'done', submitted: st === 'submitted',
-          current: st === 'current', locked: st === 'locked',
+          current: st === 'current', locked: false,
           hasNotes: notes > 0, notes: notes,
-          icon: st === 'done' ? 'fill:check-circle' : st === 'submitted' ? 'hourglass-medium' : st === 'current' ? 'play-circle' : 'circle-dashed',
-          iconColor: (st === 'done' || st === 'current') ? 'var(--color-accent-700)' : 'var(--color-neutral-700)',
-          textColor: st === 'locked' ? 'var(--color-neutral-700)' : 'var(--color-neutral-900)',
-          statusText: st === 'done' ? 'נבדק · ' + (notes ? notes + ' הערות' : 'ללא הערות')
-            : st === 'submitted' ? 'ממתין למשוב ' + managerName
-              : st === 'current' ? 'הפרק הבא' : 'נעול'
+          icon: st === 'done' ? 'fill:check-circle' : st === 'submitted' ? 'hourglass-medium' : 'play-circle',
+          iconColor: 'var(--color-accent-700)',
+          textColor: 'var(--color-neutral-900)',
+          statusText: st === 'done' ? 'נבדק · ' + (notes ? notes + ' משובים' : 'ללא משוב')
+            : st === 'submitted' ? 'ממתין למשוב'
+              : 'טרם הוגש'
         };
       });
     }
@@ -1861,6 +1966,16 @@ window.ICONS = {
     var testsDone = chapters.filter(function (c) { return c.done; }).length;
     var testsSubmitted = chapters.filter(function (c) { return c.submitted; }).length;
 
+    // Real, self-computed learning time — never approved by a manager, per
+    // request: finishing a chapter simply adds the time spent to the
+    // record. The certificate needs at least 60 of these hours, plus every
+    // chapter graded.
+    var learningMs = 0;
+    for (var ctKey in state.chapterTime) learningMs += Number(state.chapterTime[ctKey]) || 0;
+    var learningHours = Math.round(learningMs / 3600000 * 10) / 10;
+    var learningTarget = 60;
+    var certReal = learningHours >= learningTarget && totalChapters > 0 && testsDone >= totalChapters;
+
     var practiceTarget = Number(CUR.practiceTarget) || 60;
     var ceTarget = Number(CUR.ceTarget) || 10;
     var perStageHours = practiceTarget / stageCount;
@@ -1883,8 +1998,6 @@ window.ICONS = {
     // Its content is fetched from the server, never assumed locally, since
     // the grader is very often not the learner whose exam this is.
     var gradeSubmission = gradeTarget ? ensureSubmissionLoaded(gradeTarget.userId, gradeTarget.kind, gradeTarget.ref) : null;
-    var mySubByRef = {};
-    mySubmissions.forEach(function (s) { mySubByRef[s.kind + ':' + s.ref] = s; });
     // Whichever chapter the learner opened, falling back to the first one
     // that has feedback on it.
     var reviewChapter = chapters.filter(function (c) { return c.id === state.reviewTarget; })[0]
@@ -1973,7 +2086,7 @@ window.ICONS = {
       review: 'משוב מנהל', final: 'מבחן מסכם', file: T.file, practiceNew: 'רשומת פרקטיקה',
       notifications: T.notif, search: 'חיפוש', schedule: T.schedule, session: 'דף שיעור',
       sessionAfter: 'דף שיעור', library: T.library, upload: 'העלאה למאגר', asset: 'נכס ידע',
-      admin: T.admin, curriculum: 'תוכנית הלימודים', chapterEdit: 'תוכן הפרק', sessionsEdit: 'ניהול השיעורים', libraryEdit: 'ניהול המאגר', managerTest: 'בדיקת מבחן', chapterRoster: 'סטטוס פרק', observation: 'תצפית שדה',
+      admin: T.admin, curriculum: 'תוכנית הלימודים', chapterEdit: 'תוכן הפרק', sessionsEdit: 'ניהול השיעורים', libraryEdit: 'ניהול המאגר', managerTest: 'בדיקת מבחן', chapterRoster: 'סטטוס פרק', peopleAdmin: 'ניהול אנשים', cohortsAdmin: 'ניהול תקופות', observation: 'תצפית שדה',
       stageMeeting: 'שיחת סיכום שלב', fileReview: 'סקירת תיק', coordinator: 'רכז הדרכה'
     };
 
@@ -2014,6 +2127,8 @@ window.ICONS = {
       cond3: practiceHours >= practiceTarget,
       cond1Text: (done ? totalChapters : testsDone) + ' מתוך ' + totalChapters + ' מבחני פרק עם משוב',
       cond3Text: practiceHours + ' מתוך ' + practiceTarget + ' שעות פרקטיקה מאושרות',
+      learningHours: learningHours, learningTarget: learningTarget, certReal: certReal,
+      cond4: learningHours >= learningTarget, cond4Text: learningHours + ' מתוך ' + learningTarget + ' שעות למידה במערכת',
       heroKicker: done ? 'הכשרה הושלמה · יום ' + day
         : 'שלב ' + stageIdx + ' מתוך 3 · ' + ['שיטת פוירשטיין', 'שיקום קוגניטיבי', 'הכשרת אגף ' + deptName][stageIdx - 1] + ' · יום ' + day,
       heroTitle: done ? first + ', ההכשרה הושלמה — התעודה שלך מוכנה'
@@ -2032,7 +2147,7 @@ window.ICONS = {
     file: ['file', 'practiceNew'],
     schedule: ['schedule', 'session', 'sessionAfter'],
     library: ['library', 'upload', 'asset'],
-    admin: ['admin', 'managerTest', 'chapterRoster', 'observation', 'stageMeeting', 'fileReview', 'coordinator', 'curriculum', 'chapterEdit', 'sessionsEdit', 'libraryEdit']
+    admin: ['admin', 'managerTest', 'chapterRoster', 'observation', 'stageMeeting', 'fileReview', 'coordinator', 'curriculum', 'chapterEdit', 'sessionsEdit', 'libraryEdit', 'peopleAdmin', 'cohortsAdmin']
   };
 
   function areaOf(screen) {
@@ -2543,8 +2658,9 @@ window.ICONS = {
       '<div class="condline">' + condIcon(v.cond2) + '<span>מבחן מסכם הוגש</span>' +
       '<button type="button" class="btn-link" data-act="go" data-arg="final">לצפייה</button></div>' +
       '<div class="condline">' + condIcon(v.cond3) + '<span>' + esc(v.cond3Text) + '</span></div>' +
+      '<div class="condline">' + condIcon(v.cond4) + '<span>' + esc(v.cond4Text) + '</span></div>' +
       '</div>' +
-      '<div class="small muted" style="line-height:1.55">תצפיות שדה (' + v.observations + ') ושיחות סיכום (' + v.meetings + ' מתוך 3) נרשמות בתיק אך אינן תנאי — לפי שיקול המנהל.</div>' +
+      '<div class="small muted" style="line-height:1.55">שעות הלמידה נספרות אוטומטית לפי הזמן שבו פרק פתוח אצלך, בלי אישור מנהל. תצפיות שדה (' + v.observations + ') ושיחות סיכום (' + v.meetings + ' מתוך 3) נרשמות בתיק אך אינן תנאי — לפי שיקול המנהל.</div>' +
       '</div>';
 
     if (v.done) {
@@ -3223,6 +3339,7 @@ window.ICONS = {
       '<button type="button" class="btn-link" data-act="go" data-arg="final">לקריאה</button></div>' +
       '<div class="condrow">' + condIcon(v.cond3) + '<span>' + esc(v.cond3Text) + '</span>' +
       '<button type="button" class="btn-link" data-act="go" data-arg="file">ליומן</button></div>' +
+      '<div class="condrow">' + condIcon(v.cond4) + '<span>' + esc(v.cond4Text) + ' · אוטומטי, ללא אישור</span></div>' +
       '</div>' +
       '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px" class="small muted">' +
       '<span>תצפיות שדה: ' + v.observations + ' · לפי שיקול המנהל</span>' +
@@ -3297,11 +3414,119 @@ window.ICONS = {
       '<button type="button" class="btn btn-primary btn-block" style="justify-content:flex-start" data-act="go" data-arg="curriculum">' + icon('graduation-cap') + '<span>בניית תוכנית הלימודים</span></button>' +
       '<button type="button" class="btn btn-primary btn-block" style="justify-content:flex-start" data-act="go" data-arg="sessionsEdit">' + icon('calendar-plus') + '<span>ניהול השיעורים</span></button>' +
       '<button type="button" class="btn btn-primary btn-block" style="justify-content:flex-start" data-act="go" data-arg="libraryEdit">' + icon('books') + '<span>ניהול מאגר הידע</span></button>' +
+      '<button type="button" class="btn btn-primary btn-block" style="justify-content:flex-start" data-act="go" data-arg="peopleAdmin">' + icon('users-three') + '<span>ניהול אנשים · מדריכים, מנהלי פרק ומנהלי מערכת</span></button>' +
+      '<button type="button" class="btn btn-primary btn-block" style="justify-content:flex-start" data-act="go" data-arg="cohortsAdmin">' + icon('calendar-check') + '<span>ניהול תקופות</span></button>' +
       '<button type="button" class="btn btn-quiet btn-block" style="justify-content:flex-start" data-act="toast" data-arg="הזמנת אורח נשלחה · הרשאה ל-30 יום">' + icon('user-plus') + '<span>הזמנת מרצה חיצוני · אורח 30 יום</span></button>' +
 
       '<button type="button" class="btn btn-quiet btn-block" style="justify-content:flex-start" data-act="print">' + icon('file-arrow-down') + '<span>דוח רבעוני להנהלה</span></button>' +
       '</div></div></div></div>';
   };
+
+  /* ניהול אנשים — הרשאות מדריך / מנהל פרק / מנהל מערכת. מוגבל למנהל בלבד. */
+  screens.peopleAdmin = function (v) {
+    ensurePeopleLoaded();
+    var list = myPeople;
+    if (list === null) return '<div class="page" style="gap:20px">' + back('coordinator', 'חזרה לרכז ההדרכה') + '<div class="card pad small muted">טוען…</div></div>';
+    var byId = {};
+    list.forEach(function (p) { byId[p.id] = p; });
+    var CUR = curriculum();
+    var allChapterRefs = [];
+    CUR.stages.forEach(function (st, si) {
+      (st.chapters || []).forEach(function (c, i) { allChapterRefs.push({ ref: 's:' + si + ':' + i, title: (si + 1) + '.' + (i + 1) + ' ' + asChapter(c).title }); });
+    });
+
+    var h = '<div class="page narrow" style="gap:20px">' +
+      back('coordinator', 'חזרה לרכז ההדרכה') +
+      '<div class="stack s6"><h1 class="h1">ניהול אנשים</h1>' +
+      '<div class="small muted">שיוך מדריכים, מנהלי פרק, והענקת הרשאת מנהל מערכת — הכל כאן משפיע מיידית בצד השרת.</div></div>' +
+      (list.length ? list.map(function (p) {
+        var mentor = p.managerId ? (byId[p.managerId] ? byId[p.managerId].name : p.managerId) : '';
+        var chapterChips = p.chapterRefs.map(function (ref) {
+          var ch = chapterAt(ref).chapter;
+          return '<span class="tag neutral">' + esc(ref + ' ' + ch.title) +
+            ' <button type="button" class="btn-link" data-act="removeChapterManager" data-arg="' + esc(p.id) + '|' + esc(ref) + '">✕</button></span>';
+        }).join(' ');
+        return '<div class="card pad stack s12">' +
+          '<div class="row between"><span class="h5">' + esc(p.name) + '</span>' +
+          '<span class="tiny muted">' + esc(p.email) + '</span></div>' +
+          field('מדריך (מנהל אישי)', '<select class="select" data-act-change="assignMentorSelect" data-arg="' + esc(p.id) + '">' +
+            '<option value="">ללא</option>' +
+            list.filter(function (o) { return o.id !== p.id; }).map(function (o) {
+              return '<option value="' + esc(o.id) + '"' + (p.managerId === o.id ? ' selected' : '') + '>' + esc(o.name) + '</option>';
+            }).join('') + '</select>') +
+          '<div class="stack s6"><span class="label">מנהל פרק עבור</span>' +
+          '<div class="row tight">' + (chapterChips || '<span class="tiny muted">אין</span>') + '</div>' +
+          '<select class="select" data-act-change="addChapterManagerSelect" data-arg="' + esc(p.id) + '">' +
+            '<option value="">הוספת פרק לניהול…</option>' +
+            allChapterRefs.filter(function (c) { return p.chapterRefs.indexOf(c.ref) === -1; }).map(function (c) {
+              return '<option value="' + esc(c.ref) + '">' + esc(c.title) + '</option>';
+            }).join('') + '</select></div>' +
+          '<div class="row tight" style="align-items:center">' +
+          '<button type="button" class="pill' + (p.isAdmin ? ' active' : '') + '" data-act="toggleAdmin" data-arg="' + esc(p.id) + '|' + (p.isAdmin ? '0' : '1') + '"' +
+          (p.isRoot ? ' disabled' : '') + '>' + (p.isAdmin ? 'מנהל מערכת ✓' : 'הפיכה למנהל מערכת') + '</button>' +
+          (p.isRoot ? '<span class="tiny muted">מנהל קבוע — לא ניתן לבטל</span>' : '') +
+          '</div></div>';
+      }).join('') : '<div class="card pad small muted">אין עדיין חשבונות מאושרים.</div>') +
+      '</div>';
+    return h;
+  };
+
+  /* ניהול תקופות ("כיתות") — הענקת חלון 90 הימים לפי קבוצה. מוגבל למנהל בלבד. */
+  screens.cohortsAdmin = function (v) {
+    ensureCohortsLoaded();
+    var list = myCohorts;
+    var editingId = state.cohortEditId || '';
+    var membersList = editingId ? ensureCohortMembers(editingId) : null;
+    ensurePeopleLoaded();
+
+    var h = '<div class="page narrow" style="gap:20px">' +
+      back('coordinator', 'חזרה לרכז ההדרכה') +
+      '<div class="stack s6"><h1 class="h1">ניהול תקופות</h1>' +
+      '<div class="small muted">כל תקופה פותחת את המסלול לפי תאריך ההתחלה שלה — אפשר כמה תקופות יחד, במקביל או ברצף.</div></div>';
+
+    if (list === null) {
+      h += '<div class="card pad small muted">טוען…</div></div>';
+      return h;
+    }
+
+    h += (list.length ? list.map(function (c) {
+      var isOpen = editingId === c.id;
+      return '<div class="card pad stack s12">' +
+        '<div class="row between"><span class="h5">' + esc(c.name) + '</span>' +
+        '<button type="button" class="btn-link" data-act="deleteCohort" data-arg="' + esc(c.id) + '">מחיקה</button></div>' +
+        '<div class="small muted">התחלה ' + esc(c.startDate) + (c.endDate ? ' · סיום ' + esc(c.endDate) : '') + ' · ' + c.memberCount + ' לומדים</div>' +
+        '<button type="button" class="btn btn-quiet btn-sm" style="align-self:flex-start" data-act="cohortEditMembers" data-arg="' + esc(c.id) + '">' +
+        (isOpen ? 'סגירת רשימת החברים' : 'עריכת חברי התקופה') + '</button>' +
+        (isOpen ? cohortMembersEditor(c.id, membersList) : '') +
+        '</div>';
+    }).join('') : '<div class="card pad small muted">אין עדיין תקופות.</div>');
+
+    h += '<div class="card pad stack s12">' +
+      '<span class="h5">תקופה חדשה</span>' +
+      field('שם', '<input class="input" data-bind="newCohortName" value="' + esc(state.newCohortName || '') + '">') +
+      '<div class="grid-fields sm">' +
+      field('תאריך התחלה', '<input class="input" type="date" data-bind="newCohortStart" value="' + esc(state.newCohortStart || '') + '">') +
+      field('תאריך סיום (לא חובה)', '<input class="input" type="date" data-bind="newCohortEnd" value="' + esc(state.newCohortEnd || '') + '">') +
+      '</div>' +
+      '<button type="button" class="btn btn-primary" style="align-self:flex-start" data-act="saveCohort">' + icon('plus') + '<span>יצירת תקופה</span></button>' +
+      '</div></div>';
+    return h;
+  };
+
+  function cohortMembersEditor(cohortId, membersList) {
+    if (membersList === 'loading' || membersList == null) return '<div class="tiny muted">טוען…</div>';
+    var memberIds = membersList.map(function (m) { return m.id; });
+    var people = myPeople || [];
+    return '<div class="stack s8" style="border-top:1px solid var(--color-neutral-300);padding-top:10px">' +
+      '<span class="tiny muted">סימון מי שייך לתקופה זו — שמירה מחליפה את כל הרשימה</span>' +
+      '<div class="stack s6">' + people.map(function (p) {
+        var checked = memberIds.indexOf(p.id) !== -1;
+        return '<label class="check"><input type="checkbox" data-cohort-member="' + esc(p.id) + '"' + (checked ? ' checked' : '') + '>' +
+          '<span>' + esc(p.name) + '</span></label>';
+      }).join('') + '</div>' +
+      '<button type="button" class="btn btn-primary btn-sm" style="align-self:flex-start" data-act="saveCohortMembers" data-arg="' + esc(cohortId) + '">שמירת חברי התקופה</button>' +
+      '</div>';
+  }
 
   /* 23 — בניית תוכנית הלימודים (רכז הדרכה) */
   screens.curriculum = function (v) {
@@ -3679,6 +3904,78 @@ window.ICONS = {
         render();
         toast('נרשמת · תזכורת תישלח יום לפני');
       }).catch(function () { toast('שגיאה בהרשמה — נסה/י שוב'); });
+    },
+
+    assignMentorSelect: function (mentorId, el) {
+      var learnerId = el.getAttribute('data-arg');
+      if (!remoteActive()) { toast('אין חיבור לשרת'); return; }
+      var call = mentorId
+        ? remoteCall('assignMentor', { learnerId: learnerId, mentorId: mentorId })
+        : remoteCall('unassignMentor', { learnerId: learnerId });
+      call.then(function () { myPeople = null; render(); toast('עודכן'); })
+        .catch(function () { toast('שגיאה בעדכון'); });
+    },
+
+    addChapterManagerSelect: function (chapterRef, el) {
+      var userId = el.getAttribute('data-arg');
+      if (!chapterRef || !remoteActive()) return;
+      remoteCall('assignChapterManager', { userId: userId, chapterRef: chapterRef })
+        .then(function () { myPeople = null; render(); toast('שויך כמנהל פרק'); })
+        .catch(function () { toast('שגיאה בשיוך'); });
+    },
+
+    removeChapterManager: function (arg) {
+      var parts = String(arg || '').split('|');
+      if (!remoteActive()) return;
+      remoteCall('removeChapterManager', { userId: parts[0], chapterRef: parts[1] })
+        .then(function () { myPeople = null; render(); })
+        .catch(function () { toast('שגיאה בהסרה'); });
+    },
+
+    toggleAdmin: function (arg) {
+      var parts = String(arg || '').split('|');
+      var id = parts[0], wantAdmin = parts[1] === '1';
+      if (!remoteActive()) return;
+      remoteCallAuth('setAdmin', { id: id, isAdmin: wantAdmin })
+        .then(function () { myPeople = null; render(); toast(wantAdmin ? 'הוענקה הרשאת מנהל מערכת' : 'הרשאת מנהל מערכת בוטלה'); })
+        .catch(function (e) { toast((e && e.body && e.body.error === 'cannot_demote_self') ? 'לא ניתן לבטל את ההרשאה לעצמך' : 'שגיאה בעדכון'); });
+    },
+
+    saveCohort: function () {
+      var name = (state.newCohortName || '').trim();
+      var startDate = state.newCohortStart || '';
+      var endDate = state.newCohortEnd || '';
+      if (!name || !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) { toast('צריך שם ותאריך התחלה תקין'); return; }
+      if (!remoteActive()) { toast('אין חיבור לשרת'); return; }
+      remoteCall('saveCohort', { name: name, startDate: startDate, endDate: endDate || undefined }).then(function () {
+        myCohorts = null;
+        set({ newCohortName: '', newCohortStart: '', newCohortEnd: '' });
+        toast('התקופה נוצרה');
+      }).catch(function () { toast('שגיאה ביצירת התקופה'); });
+    },
+
+    deleteCohort: function (arg) {
+      if (!remoteActive()) return;
+      remoteCall('deleteCohort', { id: arg }).then(function () { myCohorts = null; render(); toast('התקופה נמחקה'); })
+        .catch(function () { toast('שגיאה במחיקה'); });
+    },
+
+    cohortEditMembers: function (arg) {
+      set({ cohortEditId: state.cohortEditId === arg ? '' : arg });
+    },
+
+    saveCohortMembers: function (arg) {
+      var cohortId = arg;
+      var boxes = root ? root.querySelectorAll('[data-cohort-member]') : [];
+      var userIds = [];
+      for (var i = 0; i < boxes.length; i++) if (boxes[i].checked) userIds.push(boxes[i].getAttribute('data-cohort-member'));
+      if (!remoteActive()) { toast('אין חיבור לשרת'); return; }
+      remoteCall('setCohortMembers', { cohortId: cohortId, userIds: userIds }).then(function () {
+        delete cohortMembersCache[cohortId];
+        myCohorts = null;
+        render();
+        toast('רשימת התקופה נשמרה');
+      }).catch(function () { toast('שגיאה בשמירה'); });
     },
 
     // Attendance is never self-reported — only reachable from the
@@ -4155,6 +4452,17 @@ window.ICONS = {
     if (!fn) return;
     e.preventDefault();
     fn(el.getAttribute('data-arg'));
+  });
+
+  // A small number of admin screens (assign mentor, assign chapter manager)
+  // are more usable as a <select> than as a row of pill buttons — this is
+  // the one place a change event drives an action rather than saved state.
+  document.addEventListener('change', function (e) {
+    var el = e.target.closest ? e.target.closest('[data-act-change]') : null;
+    if (!el) return;
+    var fn = actions[el.getAttribute('data-act-change')];
+    if (!fn) return;
+    fn(el.value, el);
   });
 
   document.addEventListener('submit', function (e) {

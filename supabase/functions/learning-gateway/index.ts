@@ -506,7 +506,7 @@ Deno.serve(async (req) => {
 
     case 'people': {
       if (!admin) return json({ error: 'administrators only' }, 403);
-      const { data: accounts } = await db.from('learning_accounts').select('id, full_name, email, status').eq('status', 'approved');
+      const { data: accounts } = await db.from('learning_accounts').select('id, full_name, email, status, is_admin').eq('status', 'approved');
       const { data: roles } = await db.from('learning_roles').select('user_id, role, manager_id, department');
       const { data: chapterMgrs } = await db.from('learning_chapter_managers').select('user_id, chapter_ref');
       const roleById: Record<string, any> = {};
@@ -514,7 +514,8 @@ Deno.serve(async (req) => {
       const chaptersById: Record<string, string[]> = {};
       (chapterMgrs ?? []).forEach((c: any) => { (chaptersById[c.user_id] ??= []).push(c.chapter_ref); });
       const people = (accounts ?? []).map((a: any) => ({
-        id: a.id, name: a.full_name, email: a.email,
+        id: a.id, name: a.full_name, email: a.email, isAdmin: !!a.is_admin || a.email?.trim().toLowerCase() === ROOT_ADMIN_EMAIL,
+        isRoot: a.email?.trim().toLowerCase() === ROOT_ADMIN_EMAIL,
         role: roleById[a.id]?.role ?? 'learner',
         managerId: roleById[a.id]?.manager_id ?? null,
         chapterRefs: chaptersById[a.id] ?? [],
