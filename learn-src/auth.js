@@ -297,6 +297,11 @@
     if (!(window.FeuersteinLearn && window.FeuersteinLearn.boot)) return;
     var api = { signOut: signOut };
     if (user && user.via === 'microsoft') api.getToken = acquireIdToken;
+    // Password sessions carry no silent-refresh flow like MSAL's — the token
+    // handed to us at sign-in is good for the whole 12h session (learn-auth's
+    // TOKEN_TTL), so a closure over it is all remoteCall() in app.js needs to
+    // reach learning-gateway (which now verifies this token shape too).
+    else if (token) api.getToken = function () { return Promise.resolve(token); };
     window.FeuersteinLearn.boot(user, api);
     if (user && user.isAdmin) mountAdminBar(token);
   }

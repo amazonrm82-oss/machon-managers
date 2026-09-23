@@ -361,6 +361,24 @@ Deno.serve(async (req: Request) => {
       return json({ ok: true });
     }
 
+    // Grant or revoke admin power on another approved account. Any current
+    // admin may do this — there is no separate "super-admin" tier — but an
+    // admin may not demote themself (avoids an accidental lockout; note
+    // matanz@icelp.org.il keeps full power in learning-gateway regardless of
+    // this flag, so there is always one way back in even from a mistake
+    // here). Takes effect the next time the affected account signs in —
+    // an already-issued session token keeps the admin claim it was minted
+    // with for its 12h life.
+    if (action === 'setAdmin') {
+      const id = String(body.id || '');
+      const wantAdmin = !!body.isAdmin;
+      if (!id) return json({ ok: false, error: 'bad_request' }, 400);
+      if (id === me.sub && !wantAdmin) return json({ ok: false, error: 'cannot_demote_self' }, 400);
+      const { error } = await db.from('learning_accounts').update({ is_admin: wantAdmin }).eq('id', id).eq('status', 'approved');
+      if (error) return json({ ok: false, error: 'server_error' }, 500);
+      return json({ ok: true });
+    }
+
     return json({ ok: false, error: 'unknown_action' }, 400);
   } catch (e) {
     console.error('learn-auth error:', e);

@@ -43,6 +43,7 @@
     registered: false,
     libTab: 'assets',
     reviewTarget: '',
+    chapterRosterRef: '',
     // null means "the institute's original programme"; the builder clones it
     // on the first edit so the default is never mutated.
     curriculum: null,
@@ -113,8 +114,11 @@
     // localStorage is always written — it is the offline cache, and the only
     // store at all for the demo entrance.
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* ignore */ }
-    // When signed in with a real Microsoft account, mirror it to the server too.
+    // When signed in with a real account, mirror personal progress to the
+    // server, and — only from the administrator's session — mirror any
+    // locally-edited shared content too.
     remotePush();
+    pushContentIfAdmin();
   }
 
   /* ------------------------------------------------------ remote sync (server)
@@ -148,12 +152,24 @@
       body: JSON.stringify(Object.assign({ action: action }, extra || {}))
     });
     var json = await res.json().catch(function () { return {}; });
-    if (!res.ok || json.ok === false) throw new Error((json && json.error) || ('http-' + res.status));
+    if (!res.ok || json.ok === false) {
+      var err = new Error((json && json.error) || ('http-' + res.status));
+      err.status = res.status;
+      err.body = json;
+      throw err;
+    }
     return json;
   }
 
   // Pull the learner's saved state from the server and merge it over what is in
   // memory, then re-render. Server wins for any key it carries.
+  var myCohort = null;       // { id, name, startDate, endDate } | null — the learner's cohort
+  var myAttendance = [];     // [{chapter_ref, topic_index, marked_by, marked_at}] — never self-set
+  var myRole = { role: 'learner', manager_id: null, department: null };
+  var myChapterManagerOf = []; // chapter refs the signed-in person manages, if any
+  var mySubmissions = [];    // this learner's own learning_submissions rows, incl. real feedback
+  var mySessionRegs = [];    // session refs this person has really registered for
+  var sessionRegistrants = {}; // session ref -> registrants array | 'loading', admin-only
   async function remotePull() {
     if (!remoteActive()) return;
     try {
@@ -163,11 +179,107 @@
         for (var key in data) if (key in defaults) state[key] = data[key];
         normalizeState(state);
         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* ignore */ }
-        render();
       }
+      myCohort = (r && r.cohort) || null;
+      myAttendance = (r && Array.isArray(r.attendance)) ? r.attendance : [];
+      myRole = (r && r.role) || myRole;
+      myChapterManagerOf = (r && Array.isArray(r.chapterManagerOf)) ? r.chapterManagerOf : [];
+      mySubmissions = (r && Array.isArray(r.submissions)) ? r.submissions : [];
+      mySessionRegs = (r && Array.isArray(r.sessionRegistrations)) ? r.sessionRegistrations : [];
+      render();
     } catch (e) {
       // Offline, or Entra/gateway not configured yet: keep the local cache.
     }
+    pullContent();
+  }
+
+  /* -------------------------------------------------- supervision data
+     Loaded on demand (not on every boot) and cached until a write forces a
+     refresh, since it is only needed on the admin/mentor screens. */
+  var myTeam = null;         // [{user_id, role, department, name, submitted, graded, pending, pendingList}] | null
+  var teamLoading = false;
+  var chapterRosters = {};   // chapterRef -> roster array | 'loading'
+  var gradingSub = {};       // 'userId|kind|ref' -> submission row | 'loading' | 'missing' | 'error'
+  var gradeTarget = null;    // { userId, name, kind, ref, label } — set when a grader opens one submission
+
+  function ensureTeamLoaded() {
+    if (!remoteActive() || myTeam !== null || teamLoading) return;
+    teamLoading = true;
+    remoteCall('team', {}).then(function (r) {
+      myTeam = (r && Array.isArray(r.members)) ? r.members : [];
+      teamLoading = false;
+      render();
+    }).catch(function () { myTeam = []; teamLoading = false; });
+  }
+
+  function ensureChapterRoster(chapterRef) {
+    if (!remoteActive() || !chapterRef) return [];
+    if (chapterRosters[chapterRef]) return chapterRosters[chapterRef];
+    chapterRosters[chapterRef] = 'loading';
+    remoteCall('team', { chapterRef: chapterRef }).then(function (r) {
+      chapterRosters[chapterRef] = (r && Array.isArray(r.roster)) ? r.roster : [];
+      render();
+    }).catch(function () { delete chapterRosters[chapterRef]; });
+    return chapterRosters[chapterRef];
+  }
+
+  function ensureSessionRegistrants(ref) {
+    if (!remoteActive() || !ref) return [];
+    if (sessionRegistrants[ref]) return sessionRegistrants[ref];
+    sessionRegistrants[ref] = 'loading';
+    remoteCall('sessionRegistrants', { ref: ref }).then(function (r) {
+      sessionRegistrants[ref] = (r && Array.isArray(r.registrants)) ? r.registrants : [];
+      render();
+    }).catch(function () { delete sessionRegistrants[ref]; });
+    return sessionRegistrants[ref];
+  }
+
+  function ensureSubmissionLoaded(userId, kind, ref) {
+    var key = userId + '|' + kind + '|' + ref;
+    if (gradingSub[key]) return gradingSub[key];
+    gradingSub[key] = 'loading';
+    remoteCall('submission', { userId: userId, kind: kind, ref: ref }).then(function (r) {
+      gradingSub[key] = (r && r.submission) || 'missing';
+      render();
+    }).catch(function (e) {
+      gradingSub[key] = (e && e.status === 404) ? 'missing' : 'error';
+      render();
+    });
+    return gradingSub[key];
+  }
+
+  // The shared curriculum + enrichment-session schedule: admin-edited,
+  // everyone reads. Pulled once on boot; an admin's own edits are pushed by
+  // pushContentIfAdmin() below, and reach everyone else on their next pull
+  // (a fresh load, or their own next remotePull()).
+  async function pullContent() {
+    if (!remoteActive()) return;
+    try {
+      var r = await remoteCall('content', {});
+      if (r && r.curriculum && Array.isArray(r.curriculum.stages) && r.curriculum.tracks) state.curriculum = r.curriculum;
+      if (r && Array.isArray(r.sessions)) state.sessions = r.sessions;
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* ignore */ }
+      render();
+    } catch (e) { /* offline — local cache, or the built-in defaults, carries on */ }
+  }
+
+  var contentPushTimer = null;
+  // Mirrors a locally-edited curriculum/session schedule up to the shared
+  // row, debounced — but only from the administrator's own session. Anyone
+  // else's local curriculum object only exists because editableCurriculum()
+  // clones the default the moment a non-admin screen happens to touch it;
+  // that clone must never overwrite the real shared content.
+  function pushContentIfAdmin() {
+    if (!remoteActive() || !(currentUser && currentUser.isAdmin)) return;
+    if (state.curriculum == null && state.sessions == null) return;
+    clearTimeout(contentPushTimer);
+    contentPushTimer = setTimeout(function () {
+      var payload = {};
+      if (state.curriculum != null) payload.curriculum = state.curriculum;
+      if (state.sessions != null) payload.sessions = state.sessions;
+      if (!payload.curriculum && !payload.sessions) return;
+      remoteCall('saveContent', payload).catch(function () { /* offline — next save() retries */ });
+    }, 1200);
   }
 
   // Mirror the current state to the server, debounced. No-op unless a real
@@ -186,8 +298,18 @@
     render(opts || {});
   }
 
+  // Only the administrator may edit shared content — curriculum, chapters,
+  // the session schedule, the knowledge-base library. Enforced for real in
+  // learning-gateway's saveContent (admin-only); this is the UI-level guard
+  // so a non-admin never even sees the editing screens.
+  var ADMIN_ONLY_SCREENS = ['coordinator', 'curriculum', 'chapterEdit', 'sessionsEdit', 'libraryEdit'];
   function go(screen) {
     accountOpen = false;
+    if (ADMIN_ONLY_SCREENS.indexOf(screen) !== -1 && !(currentUser && currentUser.isAdmin)) {
+      toast('מסך זה פתוח למנהל המערכת בלבד');
+      set({ screen: 'admin' }, { top: true });
+      return;
+    }
     set({ screen: screen }, { top: true });
   }
 
@@ -522,14 +644,13 @@
       || chapters.filter(function (c) { return c.submitted; })[0]
       || chapters[0];
 
-    // What the manager opens: the learner's own most recent hand-in that has
-    // no feedback yet, falling back to the seeded one that is waiting.
-    var pendingId = Object.keys(state.submissions)
-      .filter(function (k) { return k.indexOf('chapter:') === 0; })
-      .map(function (k) { return k.slice(8); })
-      .filter(function (id) { return !state.feedback[id]; })
-      .pop();
-    var toMark = chapters.filter(function (c) { return c.id === pendingId; })[0] || current;
+    // Real grading target: whichever submission a mentor/chapter-manager/
+    // coordinator/admin last opened via the team roster (openGrading action).
+    // Its content is fetched from the server, never assumed locally, since
+    // the grader is very often not the learner whose exam this is.
+    var gradeSubmission = gradeTarget ? ensureSubmissionLoaded(gradeTarget.userId, gradeTarget.kind, gradeTarget.ref) : null;
+    var mySubByRef = {};
+    mySubmissions.forEach(function (s) { mySubByRef[s.kind + ':' + s.ref] = s; });
     // Whichever chapter the learner opened, falling back to the first one
     // that has feedback on it.
     var reviewChapter = chapters.filter(function (c) { return c.id === state.reviewTarget; })[0]
@@ -590,25 +711,35 @@
       { d: 1, icon: 'calendar-dots', text: 'שיעור העשרה ביום א׳: קשב לאחר פגיעת ראש · 16:00', time: 'היום' }
     ].filter(function (n) { return n.d <= day; });
 
-    var team = [
-      { name: name + ' · ' + deptName, stage: stageLabel, delay: 0, waiting: testsSubmitted, hours: practiceHours, ce: ceHours, cert: done ? 'עד 12/2028' : '—', watch: done ? '—' : '92%', mine: true },
-      { name: 'דנה שרון · פגועי ראש', stage: '3 · אגף', delay: 0, waiting: 1, hours: 44, ce: 6, cert: '—', watch: '88%' },
-      { name: 'עומר בר · פוסט-טראומה', stage: '1 · פוירשטיין', delay: 9, waiting: 0, hours: 6, ce: 0, cert: '—', watch: '41%' },
-      { name: 'מיכל אזולאי · פגועי ראש', stage: '2 · שיקום', delay: 0, waiting: 0, hours: 31, ce: 3.5, cert: '—', watch: '95%' },
-      { name: 'יוסי טל · פוסט-טראומה', stage: 'בונוס', delay: 0, waiting: 0, hours: 60, ce: 12, cert: 'עד 03/2028', watch: '—' }
-    ].map(function (r) {
-      r.delayText = r.delay ? 'בפיגור ' + r.delay + ' ימים' : 'בקצב';
-      r.delayColor = r.delay ? 'var(--color-warn-fg)' : 'var(--color-accent-700)';
-      return r;
+    // Real team roster: a mentor's own learners, or — for a coordinator/
+    // admin — everyone. Loaded from the server on demand (ensureTeamLoaded
+    // guards against reloading on every render) since it is real, shared
+    // data, never invented locally.
+    var isPeopleManager = myRole.role === 'manager' || myRole.role === 'coordinator' || (currentUser && currentUser.isAdmin);
+    if (isPeopleManager) ensureTeamLoaded();
+    var team = (myTeam || []).map(function (r) {
+      return {
+        userId: r.user_id, name: r.name, department: r.department || '',
+        role: r.role, submitted: r.submitted || 0, graded: r.graded || 0,
+        pending: r.pending || 0, pendingList: r.pendingList || [],
+        waitingText: r.pending ? r.pending + ' ממתין למשוב' : 'הכל נבדק'
+      };
     });
-    var waitingTotal = team.reduce(function (a, r) { return a + r.waiting; }, 0);
+    var waitingTotal = team.reduce(function (a, r) { return a + r.pending; }, 0);
+
+    // Chapters this person manages (if any), with a real, live pending count
+    // per chapter — the "מנהל פרק" view.
+    var myChapters = myChapterManagerOf.map(function (ref) {
+      var c = chapterAt(ref).chapter;
+      return { ref: ref, title: c.title };
+    });
 
     var titles = {
       register: 'הרשמה', home: T.home, lesson: 'פרק ' + current.id, test: 'מבחן הפרק',
       review: 'משוב מנהל', final: 'מבחן מסכם', file: T.file, practiceNew: 'רשומת פרקטיקה',
       notifications: T.notif, search: 'חיפוש', schedule: T.schedule, session: 'דף שיעור',
       sessionAfter: 'דף שיעור', library: T.library, upload: 'העלאה למאגר', asset: 'נכס ידע',
-      admin: T.admin, curriculum: 'תוכנית הלימודים', chapterEdit: 'תוכן הפרק', sessionsEdit: 'ניהול השיעורים', libraryEdit: 'ניהול המאגר', managerTest: 'בדיקת מבחן', observation: 'תצפית שדה',
+      admin: T.admin, curriculum: 'תוכנית הלימודים', chapterEdit: 'תוכן הפרק', sessionsEdit: 'ניהול השיעורים', libraryEdit: 'ניהול המאגר', managerTest: 'בדיקת מבחן', chapterRoster: 'סטטוס פרק', observation: 'תצפית שדה',
       stageMeeting: 'שיחת סיכום שלב', fileReview: 'סקירת תיק', coordinator: 'רכז הדרכה'
     };
 
@@ -620,7 +751,9 @@
       stageIdx: stageIdx, done: done, notDone: !done, day1: day === 1,
       stages: stages, chapters: chapters, bonusList: bonusList,
       current: current, currentStage: ['שיטת פוירשטיין', 'שיקום קוגניטיבי', 'הכשרת אגף'][current.no - 1],
-      toMark: toMark,
+      gradeTarget: gradeTarget, gradeSubmission: gradeSubmission, mySubByRef: mySubByRef, mySessionRegs: mySessionRegs,
+      isAdmin: !!(currentUser && currentUser.isAdmin),
+      isPeopleManager: isPeopleManager, myChapters: myChapters, myChapterManagerOf: myChapterManagerOf,
       reviewChapter: reviewChapter, hasReview: testsDone > 0,
       tests: chapters.filter(function (c) { return c.done || c.submitted; }).reverse(),
       hasTests: testsDone + testsSubmitted > 0,
@@ -665,7 +798,7 @@
     file: ['file', 'practiceNew'],
     schedule: ['schedule', 'session', 'sessionAfter'],
     library: ['library', 'upload', 'asset'],
-    admin: ['admin', 'managerTest', 'observation', 'stageMeeting', 'fileReview', 'coordinator', 'curriculum', 'chapterEdit', 'sessionsEdit', 'libraryEdit']
+    admin: ['admin', 'managerTest', 'chapterRoster', 'observation', 'stageMeeting', 'fileReview', 'coordinator', 'curriculum', 'chapterEdit', 'sessionsEdit', 'libraryEdit']
   };
 
   function areaOf(screen) {
@@ -801,6 +934,19 @@
 
   function field(label, control) {
     return '<label class="field">' + esc(label) + control + '</label>';
+  }
+
+  // Real registrants for one session, admin-only — who actually clicked
+  // "הרשמה", loaded from learning_session_registrations.
+  function registrantsBlock(ref) {
+    if (!(currentUser && currentUser.isAdmin) || !remoteActive()) return '';
+    var list = ensureSessionRegistrants(ref);
+    if (list === 'loading') return '<div class="tiny muted">טוען נרשמים…</div>';
+    if (!Array.isArray(list) || !list.length) return '<div class="tiny muted">אין עדיין נרשמים.</div>';
+    return '<div class="stack s6"><span class="tiny muted">' + list.length + ' נרשמו:</span>' +
+      '<div class="row tight">' + list.map(function (r) {
+        return '<span class="tag neutral">' + esc(r.name) + '</span>';
+      }).join('') + '</div></div>';
   }
 
   function select(options, extra) {
@@ -1063,81 +1209,51 @@
 
   /* 5 — משוב מנהל (תצוגת עובד) */
   screens.review = function (v) {
-    // Once this learner has actually submitted this chapter, show what they
-    // wrote and what their manager wrote back — not the worked example.
-    var own = v.ownSubmissions['chapter:' + v.reviewChapter.id];
-    var ownFb = v.ownFeedback[v.reviewChapter.id];
+    // Real status, from the server: what the learner actually submitted for
+    // this chapter, and what (if anything) their grader wrote back.
+    var subRow = v.mySubByRef['chapter:' + v.reviewChapter.ref];
 
-    function qa(no, q, a, fb) {
-      return '<div class="qa"><div class="q">' +
-        '<div class="qline"><span class="qno">' + no + '</span><span class="qtext">' + esc(q) + '</span></div>' +
-        '<div class="answer">' + esc(a) + '</div></div>' +
-        (fb
-          ? '<div class="fb"><div class="grid feedback">' +
-          '<div class="stack s6"><span class="label">מה עבד</span><span class="val">' + esc(fb[0]) + '</span></div>' +
-          '<div class="stack s6"><span class="label">מה לחדד</span><span class="val">' + esc(fb[1]) + '</span></div>' +
-          '<div class="stack s6"><span class="label">שאלה להמשך</span><span class="val">' + esc(fb[2]) + '</span></div>' +
-          '</div></div>'
-          : '<div class="none">' + icon('check') + '<span>ללא הערה</span></div>') +
-        '</div>';
-    }
-
-    if (own) {
-      var fbNotes = ownFb ? ownFb.notes : [];
+    if (!subRow) {
       return '<div class="page read">' +
         back('file', 'חזרה לתיק שלי') +
         '<div class="stack s8">' +
-        '<div class="row tight">' +
-        '<span class="kicker accent">מבחן פרק · ' + esc(own.chapter + ' ' + own.title) + '</span>' +
-        (ownFb
-          ? '<span class="tag">נבדק · ' + fbNotes.length + ' הערות</span>'
-          : '<span class="tag neutral">ממתין למשוב ' + esc(v.managerName) + '</span>') + '</div>' +
-        '<h1 class="h1">' + (ownFb ? 'התשובות שלך והמשוב של ' + esc(v.managerName) : 'התשובות שלך') + '</h1>' +
-        '<div class="small muted">הוגש ביום ' + own.day + (ownFb ? ' · משוב ניתן ביום ' + ownFb.day : ' · יעד משוב: עד 3 ימי עבודה') + '</div></div>' +
-        '<div class="stack s14">' +
-        own.answers.map(function (a, i) {
-          var note = fbNotes[i];
-          return '<div class="qa"><div class="q">' +
-            '<div class="qline"><span class="qno">' + (i + 1) + '</span>' +
-            '<span class="qtext">' + esc(a.label) + '</span></div>' +
-            '<div class="answer">' + esc(a.value) + '</div></div>' +
-            (note
-              ? '<div class="fb"><div class="stack s6"><span class="label">משוב ' + esc(v.managerName) + '</span>' +
-                '<span class="val">' + esc(note.value) + '</span></div></div>'
-              : '<div class="none">' + icon('hourglass-medium') + '<span>ממתין למשוב</span></div>') +
-            '</div>';
-        }).join('') +
-        '</div></div>';
+        '<span class="kicker accent">מבחן פרק · ' + esc(v.reviewChapter.id + ' ' + v.reviewChapter.title) + '</span>' +
+        '<h1 class="h1">עדיין לא הוגש מבחן לפרק הזה</h1></div>' +
+        '<button type="button" class="btn btn-quiet" style="align-self:flex-start" data-act="go" data-arg="home">חזרה למסלול</button>' +
+        '</div>';
     }
+
+    var answers = Array.isArray(subRow.answers) ? subRow.answers : [];
+    var fbByLabel = {};
+    if (Array.isArray(subRow.feedback)) subRow.feedback.forEach(function (f) { fbByLabel[f.label] = f; });
+    var graded = !!subRow.feedback_by;
+    var submittedDate = subRow.submitted_at ? new Date(subRow.submitted_at).toLocaleDateString('he-IL') : '';
+    var gradedDate = subRow.feedback_at ? new Date(subRow.feedback_at).toLocaleDateString('he-IL') : '';
 
     return '<div class="page read">' +
       back('file', 'חזרה לתיק שלי') +
       '<div class="stack s8">' +
       '<div class="row tight">' +
       '<span class="kicker accent">מבחן פרק · ' + esc(v.reviewChapter.id + ' ' + v.reviewChapter.title) + '</span>' +
-      '<span class="tag">נבדק · 2 הערות</span></div>' +
-      '<h1 class="h1">התשובות שלך והמשוב של ' + esc(v.managerName) + '</h1>' +
-      '<div class="small muted">הוגש ביום 12 · משוב ניתן ביום 14 (יעד: עד 3 ימי עבודה)</div></div>' +
-      '<div class="mgrnote"><div class="avatar-sm avatar-md">רש</div>' +
-      '<div class="stack s6"><div class="who">הערה כללית · ' + esc(v.managerName) + '</div>' +
-      '<div class="txt">קריאה מדויקת של הרעיון המרכזי — ניכר שהבנת שהתיווך מתחיל בקשר ולא במטלה. על שאלה 3 בוא/י נדבר: קבעתי 20 דקות ביום ג׳.</div></div></div>' +
+      (graded
+        ? '<span class="tag">נבדק</span>'
+        : '<span class="tag neutral">ממתין למשוב</span>') + '</div>' +
+      '<h1 class="h1">' + (graded ? 'התשובות שלך והמשוב שקיבלת' : 'התשובות שלך') + '</h1>' +
+      '<div class="small muted">' + (submittedDate ? 'הוגש ' + esc(submittedDate) : '') +
+      (graded ? ' · משוב ניתן על ידי ' + esc(subRow.feedback_by) + (gradedDate ? ' ב-' + esc(gradedDate) : '') : '') + '</div></div>' +
       '<div class="stack s14">' +
-      qa(1, 'מהו ההבדל בין ״כוונה והדדיות״ לבין הוראה ישירה? תן/י דוגמה מהשבוע האחרון.',
-        'בהוראה ישירה אני מציג את המשימה ומצפה לביצוע. בכוונה והדדיות אני קודם בודק שהמטופל איתי — שהוא רואה מה שאני רואה. השבוע עצרתי לפני דף המכשיר ושאלתי מה הוא חושב שנעשה היום, ורק אחרי שהוא ניסח את זה במילים שלו התחלנו.',
-        ['העצירה לפני הדף — זה בדיוק הרגע.',
-          'מה עשית עם הניסוח שלו? ההדדיות היא לחזור למילים שלו, לא לשלך.',
-          'איך תדע/י שהוא ״איתך״ בלי לשאול?']) +
-      qa(2, 'איך ״תיווך משמעות״ נראה כשהמטופל אינו מבין למה התרגול חשוב?',
-        'אני מחבר את התרגול למשהו שהוא רוצה — למשל לחזור לנהוג. אז מיון נקודות הופך ל״לזהות תמרורים מהר״.', null) +
-      qa(3, 'תאר/י מצב שבו התיווך שלך לא עבד. מה היית עושה אחרת?',
-        'ניסיתי לתווך תחושת יכולת אבל הוא נסגר. אני חושב שהייתי צריך לוותר על המשימה באותו יום.',
-        ['זיהית את ההיסגרות בזמן.',
-          'לא לוותר — להקטין. תחושת יכולת צריכה הצלחה קטנה ואמיתית באותו מפגש.',
-          'מה המשימה הקטנה ביותר שהוא היה מצליח בה? נדבר ביום ג׳.']) +
-      '</div>' +
-      '<div class="row">' +
-      '<button type="button" class="btn btn-outline" data-act="toast" data-arg="התגובה נשלחה למנהל">' + icon('chat-teardrop-text') + '<span>תגובה למשוב</span></button>' +
-      '<button type="button" class="btn btn-quiet" data-act="toast" data-arg="השיחה כבר ביומן">' + icon('calendar-check') + '<span>שיחה נקבעה · יום ג׳ 10:00</span></button>' +
+      answers.map(function (a, i) {
+        var note = fbByLabel[a.label];
+        return '<div class="qa"><div class="q">' +
+          '<div class="qline"><span class="qno">' + (i + 1) + '</span>' +
+          '<span class="qtext">' + esc(a.label) + '</span></div>' +
+          '<div class="answer">' + esc(a.value) + '</div></div>' +
+          (note
+            ? '<div class="fb"><div class="stack s6"><span class="label">משוב</span>' +
+              '<span class="val">' + esc(note.value) + '</span></div></div>'
+            : '<div class="none">' + icon('hourglass-medium') + '<span>ממתין למשוב</span></div>') +
+          '</div>';
+      }).join('') +
       '</div></div>';
   };
 
@@ -1333,7 +1449,7 @@
     var list = sessions().map(function (ss) {
       return {
         id: ss.id, month: ss.month, day: ss.day, dow: ss.dow, live: !!ss.live,
-        dept: ss.dept || 'all', registered: !!ss.registered, recorded: !!ss.recorded,
+        dept: ss.dept || 'all', registered: v.mySessionRegs.indexOf(ss.id) !== -1, recorded: !!ss.recorded,
         when: ss.when, title: ss.title, who: ss.who,
         hours: Number(ss.hours) || 0, link: ss.link || '',
         act: ss.live ? 'session' : ss.recorded ? 'sessionAfter' : ''
@@ -1375,7 +1491,9 @@
             ? '<span class="tag solid" style="padding:10px 18px;border-radius:var(--radius-md)">הצטרפות</span>'
             : ss.recorded
               ? '<span class="chip on">צפייה + שאלון</span>'
-              : '<button type="button" class="btn btn-outline btn-sm" data-act="toast" data-arg="נרשמת · תזכורת תישלח יום לפני">הרשמה</button>';
+              : ss.registered
+                ? '<span class="tag" style="padding:10px 18px;border-radius:var(--radius-md)">' + icon('check') + '<span>נרשמת</span></span>'
+                : '<button type="button" class="btn btn-outline btn-sm" data-act="registerSession" data-arg="' + esc(ss.id) + '">הרשמה</button>';
           return ss.act
             ? '<button type="button" class="card sessionitem' + (ss.live ? ' ring-accent' : '') + '" data-act="go" data-arg="' + ss.act + '">' + inner + cta + '</button>'
             : '<div class="card sessionitem">' + inner + cta + '</div>';
@@ -1686,97 +1804,127 @@
 
   /* 17 — ניהול · הצוות של המנהל */
   screens.admin = function (v) {
+    var hasChapters = v.myChapters && v.myChapters.length;
     return '<div class="page" style="gap:22px">' +
       '<div class="row between" style="align-items:flex-end;gap:16px">' +
-      '<div class="stack s6"><h1 class="h1">הצוות של ' + esc(v.managerName) + '</h1>' +
-      '<div class="small muted">תצוגת מנהל ישיר · 5 עובדים · ירושלים · רק הצוות שלך</div></div>' +
-      '<button type="button" class="btn btn-quiet btn-sm" data-act="go" data-arg="coordinator">' + icon('buildings') + '<span>מסך רכז ההדרכה · כל הסניפים</span></button>' +
+      '<div class="stack s6"><h1 class="h1">הצוות שלי</h1>' +
+      '<div class="small muted">' + v.team.length + ' תלמידים · סטטוס ומבחנים ממתינים לבדיקה</div></div>' +
+      (v.isAdmin ? '<button type="button" class="btn btn-quiet btn-sm" data-act="go" data-arg="coordinator">' + icon('buildings') + '<span>מסך ניהול · כל הלומדים</span></button>' : '') +
       '</div>' +
       '<div class="grid stats">' +
-      '<button type="button" class="card ring-accent stat accent" data-act="go" data-arg="managerTest">' +
-      '<span class="label">מבחנים ממתינים למשוב שלי</span><span class="value">' + v.waitingTotal + '</span>' +
-      '<span class="note">יעד: 3 ימי עבודה · לבדיקה ' + icon('arrow-left', 'flip') + '</span></button>' +
-      '<div class="card stat"><span class="label">זמן משוב ממוצע שלי</span><span class="value">2.4 ימים</span><span class="note">אחרי 5 ימים — התראה לרכז</span></div>' +
-      '<div class="card stat"><span class="label">רשומות פרקטיקה לאישור</span><span class="value">3</span><span class="note">אישור בלחיצה</span></div>' +
-      '<div class="card warnbg stat warn"><span class="label">בפיגור</span><span class="value">1</span><span class="note">עומר בר · 9 ימים</span></div>' +
-      '<div class="card stat"><span class="label">תעודות שפוגות ב-60 יום</span><span class="value">2</span><span class="note">חסרות שעות המשך</span></div>' +
+      '<div class="card ring-accent stat accent"><span class="label">מבחנים ממתינים למשוב</span><span class="value">' + v.waitingTotal + '</span>' +
+      '<span class="note">לחיצה על שורה בטבלה פותחת לבדיקה</span></div>' +
       '</div>' +
+      (hasChapters
+        ? '<div class="card pad stack s8"><span class="h5">הפרקים שאני מנהל/ת</span>' +
+          '<div class="row tight">' + v.myChapters.map(function (c) {
+            return '<button type="button" class="pill" data-act="chapterRoster" data-arg="' + esc(c.ref) + '">' + esc(c.ref + ' ' + c.title) + '</button>';
+          }).join('') + '</div></div>'
+        : '') +
       '<div class="card clip">' +
       '<div class="card-head"><span class="h4">דוח הצוות</span>' +
-      '<span class="tiny muted">מתעדכן ראשון בבוקר · לחיצה על שורה פותחת את התיק' +
+      '<span class="tiny muted">נתונים חיים מהשרת' +
       (v.isPhone ? ' · גלילה לצדדים לשאר העמודות' : '') + '</span></div>' +
       '<div class="tablewrap"><div class="inner">' +
-      '<div class="trow head"><span>עובד/ת</span><span>שלב</span><span>קצב</span><span>ממתין לי</span>' +
-      '<span>פרקטיקה</span><span>שעות המשך</span><span>תעודה</span><span>צפייה</span></div>' +
-      v.team.map(function (r) {
-        return '<div class="' + cls('trow', r.delay && 'late', r.mine && !r.delay && 'mine') + '">' +
+      '<div class="trow head"><span>עובד/ת</span><span>תפקיד</span><span>הוגשו</span><span>נבדקו</span><span>ממתין</span><span>לבדיקה</span></div>' +
+      (v.team.length ? v.team.map(function (r) {
+        return '<div class="' + cls('trow', r.pending && 'late') + '">' +
           '<span class="name">' + esc(r.name) + '</span>' +
-          '<span class="muted">' + esc(r.stage) + '</span>' +
-          '<span style="color:' + r.delayColor + '">' + esc(r.delayText) + '</span>' +
-          '<span>' + r.waiting + '</span>' +
-          '<span>' + r.hours + ' מתוך 60</span>' +
-          '<span>' + r.ce + ' מתוך 10</span>' +
-          '<span class="muted">' + esc(r.cert) + '</span>' +
-          '<span class="muted">' + esc(r.watch) + '</span></div>';
-      }).join('') +
+          '<span class="muted">' + esc(r.role === 'manager' ? 'מדריך/ה' : r.role === 'coordinator' ? 'רכז/ת' : 'לומד/ת') + '</span>' +
+          '<span>' + r.submitted + '</span>' +
+          '<span>' + r.graded + '</span>' +
+          '<span>' + r.pending + '</span>' +
+          '<span>' + (r.pendingList.length ? r.pendingList.map(function (p) {
+            var lbl = p.kind === 'final' ? 'מבחן מסכם' : (chapterAt(p.ref).chapter.title || p.ref);
+            return '<button type="button" class="btn-link" data-act="openGrading" data-arg="' + esc(r.userId) + '|' + esc(p.kind) + '|' + esc(p.ref) + '|' + encodeURIComponent(r.name) + '|' + encodeURIComponent(lbl) + '">' + esc(lbl) + '</button>';
+          }).join(' · ') : '—') + '</span></div>';
+      }).join('') : '<div class="trow"><span class="muted" style="grid-column:1/-1">אין עדיין תלמידים משויכים אליך.</span></div>') +
       '</div></div></div>' +
-      '<div class="grid actions">' +
-      [['file', 'folder-user', 'התיק של ' + v.name, 'מבחנים, פרקטיקה, שעות, תעודה'],
-      ['observation', 'binoculars', 'תצפית שדה', '4 צירים · 4 רמות · בטלפון'],
-      ['stageMeeting', 'calendar-check', 'שיחת סיכום שלב', '20 דקות · תיעוד קצר'],
-      ['fileReview', 'certificate', 'סקירת תיק לתעודה', 'תנאים אוטומטיים + הערת סיכום']].map(function (a) {
-        return '<button type="button" class="card" style="padding:18px;display:flex;gap:12px;align-items:flex-start" data-act="go" data-arg="' + a[0] + '">' +
-          icon(a[1], 'ok') + '<span class="stack s6">' +
-          '<span class="h5" style="font-family:var(--font-heading);font-size:15px">' + esc(a[2]) + '</span>' +
-          '<span class="tiny muted">' + esc(a[3]) + '</span></span></button>';
-      }).join('') +
-      '</div></div>';
+      '</div>';
+  };
+
+  /* Chapter-manager roster: every learner's status for one specific chapter,
+     regardless of who their ordinary mentor is. */
+  screens.chapterRoster = function (v) {
+    var ref = state.chapterRosterRef || '';
+    var chapter = chapterAt(ref).chapter;
+    var roster = ensureChapterRoster(ref);
+    var loading = roster === 'loading';
+    var list = Array.isArray(roster) ? roster : [];
+    var outline = chapter.outline || [];
+    return '<div class="page" style="gap:20px">' +
+      back('admin', 'חזרה לצוות') +
+      '<div class="stack s6"><h1 class="h1">' + esc(ref + ' ' + chapter.title) + '</h1>' +
+      '<div class="small muted">נוכחות לפי נושא וסטטוס מבחן — כל הלומדים, לא רק הצוות הישיר שלך</div></div>' +
+      (loading ? '<div class="card pad small muted">טוען…</div>' :
+        '<div class="card clip"><div class="tablewrap"><div class="inner">' +
+        '<div class="trow head"><span>לומד/ת</span>' + outline.map(function (o, i) { return '<span>נושא ' + (i + 1) + '</span>'; }).join('') + '<span>מבחן</span></div>' +
+        (list.length ? list.map(function (r) {
+          return '<div class="trow"><span class="name">' + esc(r.name) + '</span>' +
+            outline.map(function (o, i) {
+              var present = r.attendance.indexOf(i) !== -1;
+              return '<span><button type="button" class="pill' + (present ? ' active' : '') + '" data-act="markAttendance" data-arg="' + esc(r.userId) + '|' + esc(ref) + '|' + i + '|' + (present ? '0' : '1') + '">' + (present ? icon('check') : icon('circle-dashed')) + '</button></span>';
+            }).join('') +
+            '<span>' + (r.graded
+              ? '<span class="tag">נבדק</span>'
+              : r.submittedAt
+                ? '<button type="button" class="btn-link" data-act="openGrading" data-arg="' + esc(r.userId) + '|chapter|' + esc(ref) + '|' + encodeURIComponent(r.name) + '|' + encodeURIComponent(ref + ' ' + chapter.title) + '">לבדיקה</button>'
+                : '<span class="muted tiny">טרם הוגש</span>') + '</span></div>';
+        }).join('') : '<div class="trow"><span class="muted" style="grid-column:1/-1">אין לומדים מאושרים במערכת.</span></div>') +
+        '</div></div></div>') +
+      '</div>';
   };
 
   /* 18 — בדיקת מבחן (מנהל) */
   screens.managerTest = function (v) {
-    function block(no, q, a, prefill) {
-      return '<div class="qa"><div class="q">' +
-        '<div class="qline"><span class="qno">' + no + '</span><span class="qtext">' + esc(q) + '</span></div>' +
-        '<div class="answer">' + esc(a) + '</div></div>' +
-        '<div class="fb"><div class="grid feedback">' +
-        '<label class="stack s6"><span class="label">מה עבד</span>' + textarea(2, '…', prefill || '') + '</label>' +
-        '<label class="stack s6"><span class="label">מה לחדד</span>' + textarea(2, '…') + '</label>' +
-        '<label class="stack s6"><span class="label">שאלה להמשך</span>' + textarea(2, '…') + '</label>' +
-        '</div></div></div>';
+    var t = v.gradeTarget;
+    if (!t) {
+      return '<div class="page" style="gap:20px">' + back('admin', 'חזרה לצוות') +
+        '<div class="card pad small muted">לא נבחרה הגשה לבדיקה. חזרה לרשימת הצוות ובחירת מבחן לבדיקה משם.</div></div>';
     }
+    var sub = v.gradeSubmission;
+    if (sub === 'loading' || sub == null) {
+      return '<div class="page" style="gap:20px">' + back('admin', 'חזרה לצוות') +
+        '<div class="stack s8"><h1 class="h1">' + esc(t.name + ' · ' + t.label) + '</h1></div>' +
+        '<div class="card pad small muted">טוען…</div></div>';
+    }
+    if (sub === 'missing' || sub === 'error') {
+      return '<div class="page" style="gap:20px">' + back('admin', 'חזרה לצוות') +
+        '<div class="stack s8"><h1 class="h1">' + esc(t.name + ' · ' + t.label) + '</h1></div>' +
+        '<div class="card pad small muted">' + (sub === 'missing' ? 'לא נמצאה הגשה — ייתכן שעוד לא הוגשה, או שכבר אין לה קיום.' : 'שגיאה בטעינת ההגשה. נסה/י שוב.') + '</div></div>';
+    }
+
+    var answers = Array.isArray(sub.answers) ? sub.answers : [];
+    var already = !!sub.feedback_by;
+    var submittedDate = sub.submitted_at ? new Date(sub.submitted_at).toLocaleDateString('he-IL') : '';
+    var gradedDate = sub.feedback_at ? new Date(sub.feedback_at).toLocaleDateString('he-IL') : '';
+
+    var body = answers.length
+      ? answers.map(function (a, i) {
+        var existing = already && Array.isArray(sub.feedback)
+          ? sub.feedback.filter(function (f) { return f.label === a.label; })[0]
+          : null;
+        return '<div class="qa"><div class="q">' +
+          '<div class="qline"><span class="qno">' + (i + 1) + '</span><span class="qtext">' + esc(a.label) + '</span></div>' +
+          '<div class="answer">' + esc(a.value) + '</div></div>' +
+          (already
+            ? '<div class="fb"><div class="stack s6"><span class="label">משוב</span>' +
+              '<span class="val">' + (existing ? esc(existing.value) : 'ללא משוב לשאלה זו') + '</span></div></div>'
+            : '<div class="fb"><label class="stack s6"><span class="label">משוב</span>' + textarea(2, '…', '', a.label) + '</label></div>') +
+          '</div>';
+      }).join('')
+      : '<div class="card pad small muted">אין תשובות בהגשה זו.</div>';
 
     return '<div class="page" style="gap:20px">' +
       back('admin', 'חזרה לצוות') +
-      '<div class="stack s8"><div class="kicker accent">מבחנים לבדיקה · תצוגת מנהל</div>' +
-      '<h1 class="h1">' + esc(v.name + ' · ' + v.toMark.id + ' ' + v.toMark.title) + '</h1>' +
-      '<div class="small muted">הוגש היום · יעד משוב: 3 ימי עבודה · אין ציון — תבנית משוב אחידה לכל שאלה</div></div>' +
-      '<div class="cols">' +
-      '<div class="card" style="flex:1 1 240px;padding:8px;display:flex;flex-direction:column">' +
-      '<div class="rowitem" style="background:var(--color-accent-100)">' +
-      '<span class="avatar-sm tint">' + esc(v.initials) + '</span>' +
-      '<span class="body"><span class="t" style="color:var(--color-accent-800)">' + esc(v.name + ' · ' + v.toMark.id) + '</span>' +
-      '<span class="s" style="color:var(--color-accent-700)">הוגש היום</span></span></div>' +
-      '<div class="rowitem"><span class="avatar-sm">דש</span>' +
-      '<span class="body"><span class="t">דנה שרון · 3.2 אבחון וקביעת מטרות</span><span class="s">הוגש אתמול</span></span></div>' +
-      '<div class="rowitem"><span class="avatar-sm">יט</span>' +
-      '<span class="body"><span class="t">יוסי טל · בונוס ב.2</span><span class="s">הוגש לפני 4 ימים</span>' +
-      '<span class="s" style="color:var(--color-warn-fg)">מחר עובר את יעד ה-3 ימים</span></span></div>' +
-      '</div>' +
-      '<div style="flex:2 1 400px;display:flex;flex-direction:column;gap:14px">' +
-      block(1, 'תאר/י רגע מהשבוע האחרון שבו הפרק הזה שינה משהו במה שעשית.',
-        'עצרתי לפני דף המכשיר ושאלתי את המטופל מה הוא חושב שנעשה היום. חיכיתי שהוא ינסח, ורק אז התחלנו. זה לקח שתי דקות יותר והמפגש היה שונה לגמרי.',
-        'העצירה לפני הדף — זה בדיוק הרגע.') +
-      block(2, 'בחר/י מושג אחד מהפרק והסבר/י אותו למטופל או להורה — במילים שלהם.',
-        '״זיכרון עבודה זה כמו שולחן עבודה קטן. אם שמים עליו יותר מדי דברים — משהו נופל. אנחנו לומדים לשים פחות דברים בכל פעם, ולסדר אותם.״') +
-      '<div class="small muted">שאלות 3–4 למטה · ״בנק משובים טובים״ במאגר לדוגמאות</div>' +
-      '<div class="card pad-sm stack s8">' +
-      '<span class="tiny muted">הערה כללית לעובד/ת · שורה-שתיים בראש המבחן</span>' +
-      textarea(2, '…', '', 'הערה כללית לעובד/ת') + '</div>' +
-      '<div class="row">' +
-      '<button type="button" class="btn btn-primary btn-lg" data-act="sendFeedback">' + icon('check') + '<span>שליחת משוב</span></button>' +
-      '<button type="button" class="btn btn-quiet btn-lg" data-act="go" data-arg="stageMeeting">' + icon('calendar-plus') + '<span>לקבוע שיחה</span></button>' +
-      '</div></div></div></div>';
+      '<div class="stack s8"><div class="kicker accent">' + (already ? 'משוב שניתן — לא ניתן לערוך' : 'מבחן לבדיקה') + '</div>' +
+      '<h1 class="h1">' + esc(t.name + ' · ' + t.label) + '</h1>' +
+      '<div class="small muted">' + (submittedDate ? 'הוגש ' + esc(submittedDate) : '') +
+      (already ? ' · משוב ניתן על ידי ' + esc(sub.feedback_by) + (gradedDate ? ' ב-' + esc(gradedDate) : '') : '') + '</div></div>' +
+      '<div style="display:flex;flex-direction:column;gap:14px">' + body + '</div>' +
+      (already ? '' :
+        '<div class="row"><button type="button" class="btn btn-primary btn-lg" data-act="sendFeedback">' + icon('check') + '<span>שליחת משוב</span></button></div>') +
+      '</div>';
   };
 
   /* 19 — תצפית שדה */
@@ -2202,8 +2350,9 @@
         '<div class="row tight">' +
         '<button type="button" class="pill" data-act="sessFlag" data-arg="' + i + ':live" aria-pressed="' + !!ss.live + '">משודר עכשיו</button>' +
         '<button type="button" class="pill" data-act="sessFlag" data-arg="' + i + ':recorded" aria-pressed="' + !!ss.recorded + '">הוקלט</button>' +
-        '<button type="button" class="pill" data-act="sessFlag" data-arg="' + i + ':registered" aria-pressed="' + !!ss.registered + '">נרשמתי</button>' +
-        '</div></div>';
+        '</div>' +
+        registrantsBlock(ss.id) +
+        '</div>';
     }).join('');
 
     if (!list.length) h += '<div class="card pad small muted">אין עדיין שיעורים בלוח.</div>';
@@ -2270,6 +2419,45 @@
       set({ reviewTarget: arg || '', screen: 'review' }, { top: true });
     },
 
+    chapterRoster: function (arg) {
+      accountOpen = false;
+      set({ chapterRosterRef: arg || '', screen: 'chapterRoster' }, { top: true });
+    },
+
+    // Open one real submission for grading. arg: userId|kind|ref|name|label
+    // (name/label are URI-encoded since a display name may contain '|').
+    openGrading: function (arg) {
+      var parts = String(arg || '').split('|');
+      gradeTarget = {
+        userId: parts[0], kind: parts[1], ref: parts[2],
+        name: decodeURIComponent(parts[3] || ''), label: decodeURIComponent(parts[4] || parts[2])
+      };
+      accountOpen = false;
+      set({ screen: 'managerTest' }, { top: true });
+    },
+
+    registerSession: function (arg) {
+      var ref = String(arg || '');
+      if (!ref) return;
+      if (!remoteActive()) { toast('אין חיבור לשרת — לא ניתן להירשם כרגע'); return; }
+      remoteCall('registerSession', { ref: ref }).then(function () {
+        if (mySessionRegs.indexOf(ref) === -1) mySessionRegs.push(ref);
+        render();
+        toast('נרשמת · תזכורת תישלח יום לפני');
+      }).catch(function () { toast('שגיאה בהרשמה — נסה/י שוב'); });
+    },
+
+    // Attendance is never self-reported — only reachable from the
+    // chapter-manager roster. arg: learnerId|chapterRef|topicIndex|present(0/1)
+    markAttendance: function (arg) {
+      var parts = String(arg || '').split('|');
+      var learnerId = parts[0], chapterRef = parts[1], topicIndex = Number(parts[2]), present = parts[3] === '1';
+      if (!remoteActive()) { toast('אין חיבור לשרת'); return; }
+      remoteCall('markTopicAttendance', { learnerId: learnerId, chapterRef: chapterRef, topicIndex: topicIndex, present: present })
+        .then(function () { delete chapterRosters[chapterRef]; render(); })
+        .catch(function () { toast('שגיאה בסימון הנוכחות'); });
+    },
+
     preview: function (arg) { set({ preview: arg }); },
 
     lang: function (arg) { accountOpen = true; set({ lang: arg }); },
@@ -2303,19 +2491,29 @@
     submitTest: function () {
       var v = derive();
       var prefix = 'test/' + v.current.id + '|';
+      var answers = formsFor(prefix);
       state.submissions['chapter:' + v.current.id] = {
         chapter: v.current.id, title: v.current.title, day: v.day,
-        answers: formsFor(prefix)
+        answers: answers
       };
       set({ testSubmitted: true, screen: 'home' }, { top: true });
+      if (remoteActive()) {
+        remoteCall('submit', { kind: 'chapter', ref: v.current.ref, answers: answers })
+          .catch(function () { /* stays in the local record; nothing else retries this one */ });
+      }
       toast('המבחן נשלח ל' + MANAGER + ' · התשובות נשמרו בתיק');
     },
 
     submitFinal: function () {
       var v = derive();
-      state.submissions.final = { day: v.day, answers: formsFor('final/|') };
+      var answers = formsFor('final/|');
+      state.submissions.final = { day: v.day, answers: answers };
       save();
       render();
+      if (remoteActive()) {
+        remoteCall('submit', { kind: 'final', ref: 'final', answers: answers })
+          .catch(function () { /* stays in the local record; nothing else retries this one */ });
+      }
       toast('המבחן המסכם הוגש ל' + MANAGER + ' · התשובות נשמרו');
     },
 
@@ -2404,13 +2602,29 @@
     },
 
     sendFeedback: function () {
-      var v = derive();
-      var written = formsFor('managerTest/' + v.name + '/' + v.toMark.id + '|');
+      var t = gradeTarget;
+      if (!t) { toast('אין הגשה נבחרת'); return; }
+      var prefix = 'managerTest/' + t.userId + '/' + t.kind + '/' + t.ref + '|';
+      var written = formsFor(prefix);
       if (!written.length) { toast('אין עדיין מה לשלוח — כתוב/כתבי משוב לפחות לשאלה אחת'); return; }
-      state.feedback[v.toMark.id] = { day: v.day, by: MANAGER, notes: written };
-      clearForms('managerTest/' + v.name + '/' + v.toMark.id + '|');
-      set({ screen: 'admin' }, { top: true });
-      toast('המשוב נשלח · ' + v.first + ' יקבל/תקבל התראה');
+      if (!remoteActive()) { toast('אין חיבור לשרת — לא ניתן לשלוח משוב'); return; }
+      remoteCall('feedback', { userId: t.userId, kind: t.kind, ref: t.ref, feedback: written }).then(function () {
+        clearForms(prefix);
+        delete gradingSub[t.userId + '|' + t.kind + '|' + t.ref];
+        delete chapterRosters[t.ref];
+        myTeam = null;
+        gradeTarget = null;
+        set({ screen: 'admin' }, { top: true });
+        toast('המשוב נשלח ונשמר בתיק');
+      }).catch(function (e) {
+        if (e && e.status === 409) {
+          toast('כבר ניתן משוב על ידי ' + ((e.body && e.body.feedbackBy) || 'מישהו אחר'));
+          delete gradingSub[t.userId + '|' + t.kind + '|' + t.ref];
+          render();
+        } else {
+          toast('שגיאה בשליחת המשוב — נסה/י שוב');
+        }
+      });
     },
 
     saveNote: function () {
@@ -2580,7 +2794,7 @@
     switch (v.screen) {
       case 'test': case 'lesson': return v.current.id;
       case 'review': return v.reviewChapter.id;
-      case 'managerTest': return v.name + '/' + v.toMark.id;
+      case 'managerTest': return v.gradeTarget ? (v.gradeTarget.userId + '/' + v.gradeTarget.kind + '/' + v.gradeTarget.ref) : '';
       case 'observation': case 'stageMeeting': case 'fileReview': return v.name + '/' + v.stageIdx;
       default: return '';
     }
