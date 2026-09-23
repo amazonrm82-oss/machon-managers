@@ -1555,8 +1555,13 @@ window.ICONS = {
     if (!remoteActive()) return;
     try {
       var r = await remoteCall('content', {});
-      if (r && r.curriculum && Array.isArray(r.curriculum.stages) && r.curriculum.tracks) state.curriculum = r.curriculum;
-      if (r && Array.isArray(r.sessions)) state.sessions = r.sessions;
+      // An empty override (curriculum with no stages, or a zero-length
+      // session list) is treated the same as no override at all — a real
+      // row exists the moment anyone saves *anything*, so "never touched"
+      // and "customized down to nothing" are otherwise indistinguishable
+      // from here. Matches curriculum()/sessions()'s own fallback rule.
+      if (r && r.curriculum && Array.isArray(r.curriculum.stages) && r.curriculum.stages.length && r.curriculum.tracks) state.curriculum = r.curriculum;
+      if (r && Array.isArray(r.sessions) && r.sessions.length) state.sessions = r.sessions;
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* ignore */ }
       render();
     } catch (e) { /* offline — local cache, or the built-in defaults, carries on */ }
@@ -1785,7 +1790,7 @@ window.ICONS = {
       who: 'רכז הדרכה · עם שאלון קצר בסיום · תנאי חידוש התעודה', hours: 1, link: '' }
   ];
 
-  function sessions() { return Array.isArray(state.sessions) ? state.sessions : DEFAULT_SESSIONS; }
+  function sessions() { return (Array.isArray(state.sessions) && state.sessions.length) ? state.sessions : DEFAULT_SESSIONS; }
   function editableSessions() {
     if (!Array.isArray(state.sessions)) state.sessions = JSON.parse(JSON.stringify(DEFAULT_SESSIONS));
     return state.sessions;
