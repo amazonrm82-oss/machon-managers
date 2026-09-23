@@ -249,10 +249,14 @@ Deno.serve(async (req) => {
   // Keep the learner's identity row current — the name and mail come from the
   // verified token, never from the request body. Works the same regardless
   // of which credential (Microsoft or learn-auth) verified them.
-  await db.from('learning_state').upsert(
+  const { error: identityErr } = await db.from('learning_state').upsert(
     { user_id: me.id, email: me.email, display_name: me.name },
     { onConflict: 'user_id', ignoreDuplicates: false },
   );
+  if (identityErr) {
+    console.error('learning_state identity upsert failed:', identityErr);
+    return json({ error: 'server error (identity)', detail: identityErr.message }, 500);
+  }
 
   switch (action) {
 
@@ -279,11 +283,14 @@ Deno.serve(async (req) => {
 
     case 'save': {
       // A learner saves only their own progress. There is no userId parameter
-      // here on purpose — it is always the signed-in person.
+      // here on purpose — it is always the signed-in person. Upsert, not a
+      // bare update: the row is guaranteed to exist (identity upsert above
+      // already checked for an error), but upsert is the robust choice
+      // regardless of ordering.
       if (typeof body.state !== 'object' || body.state === null) return json({ error: 'bad state' }, 400);
-      await db.from('learning_state')
-        .update({ data: body.state, updated_at: new Date().toISOString() })
-        .eq('user_id', me.id);
+      const { error } = await db.from('learning_state')
+        .upsert({ user_id: me.id, email: me.email, display_name: me.name, data: body.state, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+      if (error) { console.error('save failed:', error); return json({ error: 'server error', detail: error.message }, 500); }
       return json({ ok: true });
     }
 
@@ -291,10 +298,11 @@ Deno.serve(async (req) => {
       const kind = String(body.kind ?? '');
       const ref = String(body.ref ?? '');
       if (!['chapter', 'final', 'session_quiz'].includes(kind) || !ref) return json({ error: 'bad submission' }, 400);
-      await db.from('learning_submissions').upsert({
+      const { error } = await db.from('learning_submissions').upsert({
         user_id: me.id, kind, ref,
         answers: body.answers ?? [], submitted_at: new Date().toISOString(),
       }, { onConflict: 'user_id,kind,ref' });
+      if (error) { console.error('submit failed:', error); return json({ error: 'server error', detail: error.message }, 500); }
       return json({ ok: true });
     }
 
@@ -325,7 +333,7 @@ Deno.serve(async (req) => {
       const { error } = await db.from('learning_submissions')
         .update({ feedback: body.feedback ?? [], feedback_by: me.name || me.email, feedback_at: new Date().toISOString() })
         .eq('user_id', target).eq('kind', kind).eq('ref', ref).is('feedback_by', null);
-      if (error) return json({ error: 'server error' }, 500);
+      if (error) { console.error('db write failed:', error); return json({ error: 'server error', detail: error.message }, 500); }
       return json({ ok: true });
     }
 
@@ -424,14 +432,13 @@ Deno.serve(async (req) => {
         || (await isChapterManagerFor(me.id, chapterRef));
       if (!allowed) return json({ error: 'not your student' }, 403);
 
-      if (body.present === false) {
-        await db.from('learning_topic_attendance').delete().eq('user_id', learnerId).eq('chapter_ref', chapterRef).eq('topic_index', topicIndex);
-      } else {
-        await db.from('learning_topic_attendance').upsert(
+      const attResult = body.present === false
+        ? await db.from('learning_topic_attendance').delete().eq('user_id', learnerId).eq('chapter_ref', chapterRef).eq('topic_index', topicIndex)
+        : await db.from('learning_topic_attendance').upsert(
           { user_id: learnerId, chapter_ref: chapterRef, topic_index: topicIndex, marked_by: me.name || me.email },
           { onConflict: 'user_id,chapter_ref,topic_index' },
         );
-      }
+      if (attResult.error) { console.error('markTopicAttendance failed:', attResult.error); return json({ error: 'server error', detail: attResult.error.message }, 500); }
       return json({ ok: true });
     }
 
@@ -443,10 +450,11 @@ Deno.serve(async (req) => {
     case 'addAsset': {
       const title = String(body.title ?? '').trim();
       if (!title) return json({ error: 'a title is required' }, 400);
-      await db.from('learning_assets').insert({
+      const { error } = await db.from('learning_assets').insert({
         title, topic: body.topic ?? null, kind: body.kind ?? null,
         audience: body.audience ?? null, body: body.body ?? {}, created_by: me.id,
       });
+      if (error) { console.error('addAsset failed:', error); return json({ error: 'server error', detail: error.message }, 500); }
       return json({ ok: true });
     }
 
@@ -470,7 +478,7 @@ Deno.serve(async (req) => {
         updated_by: me.email, updated_at: new Date().toISOString(),
       };
       const { error } = await db.from('learning_content').upsert(patch, { onConflict: 'id' });
-      if (error) return json({ error: 'server error' }, 500);
+      if (error) { console.error('db write failed:', error); return json({ error: 'server error', detail: error.message }, 500); }
       return json({ ok: true });
     }
 
@@ -479,10 +487,11 @@ Deno.serve(async (req) => {
     case 'registerSession': {
       const ref = String(body.ref ?? '');
       if (!ref) return json({ error: 'bad request' }, 400);
-      await db.from('learning_session_registrations').upsert(
+      const { error } = await db.from('learning_session_registrations').upsert(
         { user_id: me.id, session_ref: ref },
         { onConflict: 'user_id,session_ref', ignoreDuplicates: true },
       );
+      if (error) { console.error('registerSession failed:', error); return json({ error: 'server error', detail: error.message }, 500); }
       return json({ ok: true });
     }
 
@@ -532,9 +541,11 @@ Deno.serve(async (req) => {
       // downgrade an existing coordinator.
       const mentorRole = await roleOf(mentorId);
       if (mentorRole.role === 'learner') {
-        await db.from('learning_roles').upsert({ user_id: mentorId, role: 'manager' }, { onConflict: 'user_id' });
+        const { error: e1 } = await db.from('learning_roles').upsert({ user_id: mentorId, role: 'manager' }, { onConflict: 'user_id' });
+        if (e1) { console.error('assignMentor (promote) failed:', e1); return json({ error: 'server error', detail: e1.message }, 500); }
       }
-      await db.from('learning_roles').upsert({ user_id: learnerId, manager_id: mentorId }, { onConflict: 'user_id' });
+      const { error: e2 } = await db.from('learning_roles').upsert({ user_id: learnerId, manager_id: mentorId }, { onConflict: 'user_id' });
+      if (e2) { console.error('assignMentor failed:', e2); return json({ error: 'server error', detail: e2.message }, 500); }
       return json({ ok: true });
     }
 
@@ -542,7 +553,8 @@ Deno.serve(async (req) => {
       if (!admin) return json({ error: 'administrators only' }, 403);
       const learnerId = String(body.learnerId ?? '');
       if (!learnerId) return json({ error: 'bad request' }, 400);
-      await db.from('learning_roles').update({ manager_id: null }).eq('user_id', learnerId);
+      const { error } = await db.from('learning_roles').upsert({ user_id: learnerId, manager_id: null }, { onConflict: 'user_id' });
+      if (error) { console.error('unassignMentor failed:', error); return json({ error: 'server error', detail: error.message }, 500); }
       return json({ ok: true });
     }
 
@@ -551,10 +563,11 @@ Deno.serve(async (req) => {
       const userId = String(body.userId ?? '');
       const chapterRef = String(body.chapterRef ?? '');
       if (!userId || !chapterRef) return json({ error: 'bad request' }, 400);
-      await db.from('learning_chapter_managers').upsert(
+      const { error } = await db.from('learning_chapter_managers').upsert(
         { user_id: userId, chapter_ref: chapterRef, assigned_by: me.email },
         { onConflict: 'user_id,chapter_ref' },
       );
+      if (error) { console.error('assignChapterManager failed:', error); return json({ error: 'server error', detail: error.message }, 500); }
       return json({ ok: true });
     }
 
@@ -563,7 +576,8 @@ Deno.serve(async (req) => {
       const userId = String(body.userId ?? '');
       const chapterRef = String(body.chapterRef ?? '');
       if (!userId || !chapterRef) return json({ error: 'bad request' }, 400);
-      await db.from('learning_chapter_managers').delete().eq('user_id', userId).eq('chapter_ref', chapterRef);
+      const { error } = await db.from('learning_chapter_managers').delete().eq('user_id', userId).eq('chapter_ref', chapterRef);
+      if (error) { console.error('removeChapterManager failed:', error); return json({ error: 'server error', detail: error.message }, 500); }
       return json({ ok: true });
     }
 
@@ -591,7 +605,7 @@ Deno.serve(async (req) => {
         { id, name, start_date: startDate, end_date: endDate, created_by: me.email },
         { onConflict: 'id' },
       );
-      if (error) return json({ error: 'server error' }, 500);
+      if (error) { console.error('db write failed:', error); return json({ error: 'server error', detail: error.message }, 500); }
       return json({ ok: true, id });
     }
 
@@ -599,7 +613,8 @@ Deno.serve(async (req) => {
       if (!admin) return json({ error: 'administrators only' }, 403);
       const id = String(body.id ?? '');
       if (!id) return json({ error: 'bad request' }, 400);
-      await db.from('learning_cohorts').delete().eq('id', id);
+      const { error } = await db.from('learning_cohorts').delete().eq('id', id);
+      if (error) { console.error('deleteCohort failed:', error); return json({ error: 'server error', detail: error.message }, 500); }
       return json({ ok: true });
     }
 
@@ -620,9 +635,11 @@ Deno.serve(async (req) => {
       if (!cohortId || !userIds) return json({ error: 'bad request' }, 400);
       // Full replace, so the admin screen's roster is always exactly what
       // gets saved — no separate add/remove calls to keep in sync.
-      await db.from('learning_cohort_members').delete().eq('cohort_id', cohortId);
+      const { error: delErr } = await db.from('learning_cohort_members').delete().eq('cohort_id', cohortId);
+      if (delErr) { console.error('setCohortMembers (clear) failed:', delErr); return json({ error: 'server error', detail: delErr.message }, 500); }
       if (userIds.length) {
-        await db.from('learning_cohort_members').insert(userIds.map((uid) => ({ cohort_id: cohortId, user_id: uid, added_by: me.email })));
+        const { error: insErr } = await db.from('learning_cohort_members').insert(userIds.map((uid) => ({ cohort_id: cohortId, user_id: uid, added_by: me.email })));
+        if (insErr) { console.error('setCohortMembers (insert) failed:', insErr); return json({ error: 'server error', detail: insErr.message }, 500); }
       }
       return json({ ok: true });
     }
