@@ -302,11 +302,30 @@ Deno.serve(async (req: Request) => {
       const email = normalizeEmail(body.email);
       const password = String(body.password || '');
       const { data: acct } = await db.from('learning_accounts').select('*').eq('email', email).maybeSingle();
-      // Same generic answer whether the email is unknown or the password is wrong.
+
+      // Locked out: refuse before even checking the password, so a locked
+      // account can't be used to keep guessing right up to the last second.
+      if (acct && acct.locked_until && new Date(acct.locked_until).getTime() > Date.now()) {
+        return json({ ok: false, error: 'locked', lockedUntil: acct.locked_until }, 423);
+      }
+
+      // Same generic answer whether the email is unknown or the password is
+      // wrong, but a real account's wrong guess still counts toward lockout.
       const ok = acct ? await verifyPassword(password, acct.pwd) : false;
-      if (!acct || !ok) return json({ ok: false, error: 'bad_credentials' }, 401);
+      if (!acct || !ok) {
+        if (acct) {
+          const attempts = (acct.failed_attempts || 0) + 1;
+          const patch: Record<string, unknown> = { failed_attempts: attempts };
+          if (attempts >= MAX_ATTEMPTS) { patch.locked_until = new Date(Date.now() + LOCKOUT_MS).toISOString(); patch.failed_attempts = 0; }
+          await db.from('learning_accounts').update(patch).eq('id', acct.id);
+        }
+        return json({ ok: false, error: 'bad_credentials' }, 401);
+      }
       if (acct.status === 'pending') return json({ ok: false, error: 'pending' }, 403);
       if (acct.status !== 'approved') return json({ ok: false, error: 'rejected' }, 403);
+      if (acct.failed_attempts || acct.locked_until) {
+        await db.from('learning_accounts').update({ failed_attempts: 0, locked_until: null }).eq('id', acct.id);
+      }
       return json({ ok: true, token: await issueToken(acct), user: { id: acct.id, name: acct.full_name, role: acct.role, email: acct.email, isAdmin: !!acct.is_admin } });
     }
 
@@ -375,6 +394,44 @@ Deno.serve(async (req: Request) => {
       if (!id) return json({ ok: false, error: 'bad_request' }, 400);
       if (id === me.sub && !wantAdmin) return json({ ok: false, error: 'cannot_demote_self' }, 400);
       const { error } = await db.from('learning_accounts').update({ is_admin: wantAdmin }).eq('id', id).eq('status', 'approved');
+      if (error) return json({ ok: false, error: 'server_error' }, 500);
+      return json({ ok: true });
+    }
+
+    // Manual password reset — there is no self-service "forgot password"
+    // flow (no email sending is wired up), so for now a stuck person asks
+    // an admin, who sets a new password directly. Also clears any lockout,
+    // since an admin resetting the password is exactly the recovery path
+    // lockout is supposed to have.
+    if (action === 'resetPassword') {
+      const id = String(body.id || '');
+      const newPassword = String(body.newPassword || '');
+      if (!id || newPassword.length < MIN_PASSWORD) return json({ ok: false, error: 'bad_request' }, 400);
+      const { error } = await db.from('learning_accounts')
+        .update({ pwd: await hashPassword(newPassword), failed_attempts: 0, locked_until: null })
+        .eq('id', id).eq('status', 'approved');
+      if (error) return json({ ok: false, error: 'server_error' }, 500);
+      return json({ ok: true });
+    }
+
+    // Full off-boarding: removes the account and everything learning-gateway
+    // ever attached to this user_id, across every learning_* table — not
+    // just learning_accounts. learning_submissions cascades automatically
+    // when its learning_state row is deleted (the FK is on delete cascade);
+    // everything else here has no FK to lean on, so it's cleared explicitly.
+    if (action === 'deleteAccount') {
+      const id = String(body.id || '');
+      if (!id) return json({ ok: false, error: 'bad_request' }, 400);
+      if (id === me.sub) return json({ ok: false, error: 'cannot_delete_self' }, 400);
+      await db.from('learning_roles').delete().eq('user_id', id);
+      await db.from('learning_roles').update({ manager_id: null }).eq('manager_id', id);
+      await db.from('learning_chapter_managers').delete().eq('user_id', id);
+      await db.from('learning_session_registrations').delete().eq('user_id', id);
+      await db.from('learning_cohort_members').delete().eq('user_id', id);
+      await db.from('learning_topic_attendance').delete().eq('user_id', id);
+      await db.from('learning_push').delete().eq('user_id', id);
+      await db.from('learning_state').delete().eq('user_id', id);
+      const { error } = await db.from('learning_accounts').delete().eq('id', id);
       if (error) return json({ ok: false, error: 'server_error' }, 500);
       return json({ ok: true });
     }

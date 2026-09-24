@@ -53,6 +53,25 @@ chk('lookalike ice.org.il rejected', !emailAllowed('bob@ice.org.il'));
 chk('subdomain of icelp rejected', !emailAllowed('x@a.icelp.org.il'));
 chk('empty local part rejected', !emailAllowed('@icelp.org.il'));
 
+// --- login lockout (mirror of the login case's attempt/lockout bookkeeping) ---
+const MAX_ATTEMPTS = 8, LOCKOUT_MS = 15 * 60 * 1000;
+function isLocked(acct, now) { return !!(acct.locked_until && new Date(acct.locked_until).getTime() > now); }
+function onWrongPassword(acct, now) {
+  const attempts = (acct.failed_attempts || 0) + 1;
+  const patch = { failed_attempts: attempts };
+  if (attempts >= MAX_ATTEMPTS) { patch.locked_until = new Date(now + LOCKOUT_MS).toISOString(); patch.failed_attempts = 0; }
+  return patch;
+}
+const now0 = Date.now();
+chk('not locked with no locked_until', !isLocked({}, now0));
+chk('not locked once the time has passed', !isLocked({ locked_until: new Date(now0 - 1000).toISOString() }, now0));
+chk('locked while locked_until is in the future', isLocked({ locked_until: new Date(now0 + 1000).toISOString() }, now0));
+chk('below threshold just increments', JSON.stringify(onWrongPassword({ failed_attempts: 2 }, now0)) === '{"failed_attempts":3}');
+{
+  const p = onWrongPassword({ failed_attempts: MAX_ATTEMPTS - 1 }, now0);
+  chk('hitting MAX_ATTEMPTS sets a future lockout and resets the counter', p.failed_attempts === 0 && new Date(p.locked_until).getTime() === now0 + LOCKOUT_MS);
+}
+
 // --- admin/approval decision (mirror of register) ---
 function registerDecision(email){ email=email.trim().toLowerCase(); const isAdmin = email===ADMIN; return { isAdmin, status: isAdmin?'approved':'pending' }; }
 chk('admin email -> approved+admin', JSON.stringify(registerDecision('Matanz@icelp.org.il'))==='{"isAdmin":true,"status":"approved"}');

@@ -45,6 +45,7 @@
     reviewTarget: '',
     chapterRosterRef: '',
     cohortEditId: '',
+    confirmDeleteId: '',
     newCohortName: '',
     newCohortStart: '',
     newCohortEnd: '',
@@ -78,7 +79,11 @@
     // Real, self-computed learning time per chapter (ms), toward the
     // certificate's 60-hour requirement — never approved by anyone, unlike
     // the separate supervised-practice hours above.
-    chapterTime: {}
+    chapterTime: {},
+    // Self-marked "I watched/covered this topic" checkmarks, per chapter ref
+    // -> array of topic indices. Self-reported by design (distinct from
+    // topic attendance, which only a mentor/chapter-manager may mark).
+    topicsWatched: {}
   };
 
   var state = load();
@@ -101,6 +106,7 @@
     });
     if (!Array.isArray(s.userAssets)) s.userAssets = [];
     if (!s.chapterTime || typeof s.chapterTime !== 'object') s.chapterTime = {};
+    if (!s.topicsWatched || typeof s.topicsWatched !== 'object') s.topicsWatched = {};
     if (s.curriculum && (!Array.isArray(s.curriculum.stages) || !s.curriculum.tracks)) s.curriculum = null;
     return s;
   }
@@ -1257,10 +1263,16 @@
       '<span>12:10 מתוך 55:00</span>' + icon('closed-captioning') + icon('download-simple') + '</div></div>' +
       '<div class="card pad stack s14">' +
       '<div class="h4">מה בפרק</div>' +
+      '<div class="small muted">סימון עצמי — לחיצה על נושא מסמנת שסיימת אותו, בלי אישור מנהל</div>' +
       '<div class="stack" style="font-size:14px;color:var(--color-neutral-800)">' +
       outline.map(function (line, i) {
         var no = (i < 9 ? '0' : '') + (i + 1);
-        return '<div style="display:flex;gap:10px"><span style="color:var(--color-accent-700);font-family:var(--font-heading)">' + no + '</span><span>' + esc(line) + '</span></div>';
+        var watchedList = state.topicsWatched[v.current.ref] || [];
+        var watched = watchedList.indexOf(i) !== -1;
+        return '<button type="button" style="all:unset;cursor:pointer;display:flex;gap:10px;align-items:center;width:100%" data-act="toggleTopicWatched" data-arg="' + esc(v.current.ref) + '|' + i + '">' +
+          icon(watched ? 'fill:check-circle' : 'circle-dashed', watched ? 'ok' : '') +
+          '<span style="color:var(--color-accent-700);font-family:var(--font-heading)">' + no + '</span>' +
+          '<span style="' + (watched ? 'color:var(--color-neutral-600);text-decoration:line-through' : '') + '">' + esc(line) + '</span></button>';
       }).join('') +
       '</div>' +
       '<div class="row" style="border-top:1px solid var(--color-neutral-300);padding-top:14px;gap:16px">' +
@@ -2132,54 +2144,20 @@
   };
 
   /* 22 — רכז הדרכה */
-  screens.coordinator = function () {
-    var branches = [
-      ['ירושלים', 9, '2.4', 61, false], ['תל אביב', 7, '2.8', 44, false],
-      ['חיפה', 4, '4.1', 27, true], ['באר שבע', 3, '2.2', 18, false]
-    ];
+  screens.coordinator = function (v) {
+    ensurePeopleLoaded();
+    var peopleCount = myPeople === null ? null : myPeople.length;
+    var adminCount = myPeople === null ? null : myPeople.filter(function (p) { return p.isAdmin; }).length;
     return '<div class="page" style="gap:22px">' +
       back('admin', 'חזרה לתצוגת מנהל') +
-      '<div class="stack s6"><h1 class="h1">רכז ההדרכה · כל הסניפים</h1>' +
-      '<div class="small muted">שבוע 37 · ירושלים, תל אביב, חיפה, באר שבע · עדכון ראשון בבוקר</div></div>' +
+      '<div class="stack s6"><h1 class="h1">מסך ניהול</h1>' +
+      '<div class="small muted">כלי הניהול של מערכת הלמידה — כל הפעולות למטה משפיעות מיידית בצד השרת.</div></div>' +
       '<div class="grid stats">' +
-      '<div class="card stat"><span class="label">בהכשרה כרגע</span><span class="value">23</span><span class="note">14 פגועי ראש · 9 פוסט-טראומה</span></div>' +
-      '<div class="card warnbg stat warn"><span class="label">משוב מעל 5 ימים</span><span class="value">3</span><span class="note">התראה נשלחה למנהלים · אחרי 10 — הרכז מגיב</span></div>' +
-      '<div class="card stat"><span class="label">זמן משוב ממוצע · כל המנהלים</span><span class="value">2.9 ימים</span><span class="note">יעד: 3 · חיפה 4.1</span></div>' +
-      '<div class="card stat"><span class="label">תעודות פוגות ב-60 יום</span><span class="value">11</span><span class="note">4 חסרות שעות המשך</span></div>' +
-      '<div class="card stat"><span class="label">תור ניקוי במאגר</span><span class="value">9</span><span class="note">תיוג חסר 5 · כפילויות 2 · תוקף 2</span></div>' +
+      '<div class="card stat"><span class="label">חשבונות מאושרים</span><span class="value">' + (peopleCount == null ? '…' : peopleCount) + '</span></div>' +
+      '<div class="card stat"><span class="label">מנהלי מערכת</span><span class="value">' + (adminCount == null ? '…' : adminCount) + '</span></div>' +
+      '<div class="card stat"><span class="label">מבחנים ממתינים (הצוות שלי)</span><span class="value">' + v.waitingTotal + '</span></div>' +
       '</div>' +
-      '<div class="cols">' +
-      '<div style="flex:2 1 400px;display:flex;flex-direction:column;gap:16px">' +
-      '<div class="card clip">' +
-      '<div class="card-head"><span class="h4">משובים שחצו את היעד</span></div>' +
-      '<div class="escrow"><span>חיפה · אלון פרץ ← נטע גל · 2.3 זיכרון</span>' +
-      '<span class="small" style="color:var(--color-warn-fg)">7 ימים</span>' +
-      '<button type="button" class="btn btn-outline btn-sm" style="font-size:12px;padding:9px 14px;min-height:40px" data-act="toast" data-arg="תזכורת נשלחה">תזכורת</button></div>' +
-      '<div class="escrow"><span>תל אביב · נעמה ברק ← שי לוין · 3.1 טראומה</span>' +
-      '<span class="small" style="color:var(--color-warn-fg)">6 ימים</span>' +
-      '<button type="button" class="btn btn-outline btn-sm" style="font-size:12px;padding:9px 14px;min-height:40px" data-act="toast" data-arg="תזכורת נשלחה">תזכורת</button></div>' +
-      '<div class="escrow"><span>באר שבע · יובל אדרי ← ליאת כץ · 1.4 מכשירים</span>' +
-      '<span class="small" style="color:var(--color-danger-fg)">11 ימים · הרכז מגיב</span>' +
-      '<button type="button" class="btn btn-primary btn-sm" style="font-size:12px;padding:9px 14px;min-height:40px" data-act="go" data-arg="managerTest">לבדיקה</button></div>' +
-      '</div>' +
-      '<div class="card clip">' +
-      '<div class="card-head"><span class="h4">לפי סניף</span></div>' +
-      '<div class="brow head"><span>סניף</span><span>בהכשרה</span><span>זמן משוב</span><span>מוסמכים</span></div>' +
-      branches.map(function (b) {
-        return '<div class="brow"><span>' + esc(b[0]) + '</span><span>' + b[1] + '</span>' +
-          '<span style="color:' + (b[4] ? 'var(--color-warn-fg)' : 'var(--color-accent-700)') + '">' + b[2] + '</span>' +
-          '<span>' + b[3] + '</span></div>';
-      }).join('') +
-      '</div></div>' +
-      '<div style="flex:1 1 260px;display:flex;flex-direction:column;gap:16px">' +
-      '<div class="card pad-sm stack s12">' +
-      '<span class="h4">תור הניקוי השבועי</span>' +
-      [['tag', '5 נכסים ללא קהל יעד', 'תקן'], ['copy', '2 כפילויות חשודות', 'אחד'],
-      ['clock-countdown', '2 נכסים שעבר תוקפם', 'ארכב'], ['chats-circle', '3 תשובות מהשדה לפרסום כנכס', 'תייג']].map(function (q) {
-        return '<div class="queue">' + icon(q[0]) + '<span>' + esc(q[1]) + '</span>' +
-          '<button type="button" class="act" data-act="toast" data-arg="' + esc(q[2]) + ' — בוצע">' + esc(q[2]) + '</button></div>';
-      }).join('') +
-      '</div>' +
+      '<div style="max-width:420px;display:flex;flex-direction:column;gap:16px">' +
       '<div class="card pad-sm stack">' +
       '<span class="h4">פעולות</span>' +
       '<button type="button" class="btn btn-primary btn-block" style="justify-content:flex-start" data-act="go" data-arg="curriculum">' + icon('graduation-cap') + '<span>בניית תוכנית הלימודים</span></button>' +
@@ -2187,10 +2165,8 @@
       '<button type="button" class="btn btn-primary btn-block" style="justify-content:flex-start" data-act="go" data-arg="libraryEdit">' + icon('books') + '<span>ניהול מאגר הידע</span></button>' +
       '<button type="button" class="btn btn-primary btn-block" style="justify-content:flex-start" data-act="go" data-arg="peopleAdmin">' + icon('users-three') + '<span>ניהול אנשים · מדריכים, מנהלי פרק ומנהלי מערכת</span></button>' +
       '<button type="button" class="btn btn-primary btn-block" style="justify-content:flex-start" data-act="go" data-arg="cohortsAdmin">' + icon('calendar-check') + '<span>ניהול תקופות</span></button>' +
-      '<button type="button" class="btn btn-quiet btn-block" style="justify-content:flex-start" data-act="toast" data-arg="הזמנת אורח נשלחה · הרשאה ל-30 יום">' + icon('user-plus') + '<span>הזמנת מרצה חיצוני · אורח 30 יום</span></button>' +
-
-      '<button type="button" class="btn btn-quiet btn-block" style="justify-content:flex-start" data-act="print">' + icon('file-arrow-down') + '<span>דוח רבעוני להנהלה</span></button>' +
-      '</div></div></div></div>';
+      '<button type="button" class="btn btn-quiet btn-block" style="justify-content:flex-start" data-act="print">' + icon('file-arrow-down') + '<span>הדפסת המסך הנוכחי</span></button>' +
+      '</div></div></div>';
   };
 
   /* ניהול אנשים — הרשאות מדריך / מנהל פרק / מנהל מערכת. מוגבל למנהל בלבד. */
@@ -2236,6 +2212,13 @@
           '<button type="button" class="pill' + (p.isAdmin ? ' active' : '') + '" data-act="toggleAdmin" data-arg="' + esc(p.id) + '|' + (p.isAdmin ? '0' : '1') + '"' +
           (p.isRoot ? ' disabled' : '') + '>' + (p.isAdmin ? 'מנהל מערכת ✓' : 'הפיכה למנהל מערכת') + '</button>' +
           (p.isRoot ? '<span class="tiny muted">מנהל קבוע — לא ניתן לבטל</span>' : '') +
+          '</div>' +
+          '<div class="row tight" style="align-items:center;border-top:1px solid var(--color-neutral-300);padding-top:10px">' +
+          '<input class="input" type="text" placeholder="סיסמה חדשה (8+ תווים)" style="max-width:220px" data-reset-pw="' + esc(p.id) + '">' +
+          '<button type="button" class="btn btn-quiet btn-sm" data-act="resetPassword" data-arg="' + esc(p.id) + '">איפוס סיסמה</button>' +
+          (p.isRoot ? '' :
+            '<button type="button" class="btn-link" style="color:var(--color-danger-fg,#b42318);margin-inline-start:auto" data-act="deleteAccount" data-arg="' + esc(p.id) + '|' + encodeURIComponent(p.name) + '">' +
+            (state.confirmDeleteId === p.id ? 'לחץ שוב לאישור מחיקה' : 'מחיקת חשבון') + '</button>') +
           '</div></div>';
       }).join('') : '<div class="card pad small muted">אין עדיין חשבונות מאושרים.</div>') +
       '</div>';
@@ -2666,6 +2649,18 @@
       set({ screen: 'managerTest' }, { top: true });
     },
 
+    // Self-reported, unlike topic attendance (mentor/chapter-manager only).
+    toggleTopicWatched: function (arg) {
+      var parts = String(arg || '').split('|');
+      var ref = parts[0], i = Number(parts[1]);
+      var list = (state.topicsWatched[ref] || []).slice();
+      var at = list.indexOf(i);
+      if (at === -1) list.push(i); else list.splice(at, 1);
+      state.topicsWatched[ref] = list;
+      save();
+      render();
+    },
+
     registerSession: function (arg) {
       var ref = String(arg || '');
       if (!ref) return;
@@ -2710,6 +2705,30 @@
       remoteCallAuth('setAdmin', { id: id, isAdmin: wantAdmin })
         .then(function () { myPeople = null; render(); toast(wantAdmin ? 'הוענקה הרשאת מנהל מערכת' : 'הרשאת מנהל מערכת בוטלה'); })
         .catch(function (e) { toast((e && e.body && e.body.error === 'cannot_demote_self') ? 'לא ניתן לבטל את ההרשאה לעצמך' : 'שגיאה בעדכון'); });
+    },
+
+    // No self-service "forgot password" flow exists (no email sending is
+    // wired up) — an admin sets a new password directly instead.
+    resetPassword: function (id) {
+      var el = root && root.querySelector('[data-reset-pw="' + id + '"]');
+      var pw = el ? el.value : '';
+      if (!pw || pw.length < 8) { toast('הסיסמה החדשה חייבת להיות באורך 8 תווים לפחות'); return; }
+      if (!remoteActive()) return;
+      remoteCallAuth('resetPassword', { id: id, newPassword: pw })
+        .then(function () { if (el) el.value = ''; toast('הסיסמה אופסה'); })
+        .catch(function () { toast('שגיאה באיפוס הסיסמה'); });
+    },
+
+    // Two-click confirm: the button itself shows "press again" the second
+    // time, no native confirm() dialog (matches the rest of the app's UI).
+    deleteAccount: function (arg) {
+      var parts = String(arg || '').split('|');
+      var id = parts[0], name = decodeURIComponent(parts[1] || '');
+      if (state.confirmDeleteId !== id) { set({ confirmDeleteId: id }); return; }
+      if (!remoteActive()) return;
+      remoteCallAuth('deleteAccount', { id: id })
+        .then(function () { myPeople = null; set({ confirmDeleteId: '' }); toast('החשבון של ' + name + ' נמחק'); })
+        .catch(function (e) { toast((e && e.body && e.body.error === 'cannot_delete_self') ? 'לא ניתן למחוק את עצמך' : 'שגיאה במחיקה'); set({ confirmDeleteId: '' }); });
     },
 
     saveCohort: function () {
